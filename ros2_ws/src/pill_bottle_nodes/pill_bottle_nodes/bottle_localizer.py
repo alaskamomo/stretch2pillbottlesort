@@ -26,6 +26,7 @@ class BottleLocalizerNode(Node):
         self.declare_parameter("depth_band", 0.06)      # keep depth within this of the box's median (m)
         self.declare_parameter("upright_max_deg", 30.0)
         self.declare_parameter("lying_min_deg", 60.0)
+        self.declare_parameter("min_range", 0.22)       # m from base_link; closer = part of the robot, not the bottle
         g = lambda n: self.get_parameter(n).value
         self.target = g("target_frame")
         self.depth = None
@@ -74,6 +75,11 @@ class BottleLocalizerNode(Node):
         pts = transform_points(T, pts_cam)
         info = classify_bottle(pts, radius=g("bottle_radius"),
                                upright_max_deg=g("upright_max_deg"), lying_min_deg=g("lying_min_deg"))
+        cx, cy = float(info["center"][0]), float(info["center"][1])
+        if (cx * cx + cy * cy) ** 0.5 < g("min_range"):
+            self.get_logger().warn(f"Ignoring a '{best.name}' at x {cx:+.2f}, y {cy:+.2f} m: within {g('min_range')} m of "
+                                   "the robot's center, so it's probably part of the robot.", throttle_duration_sec=3.0)
+            return
         out = BottleState()
         out.header.stamp = msg.header.stamp
         out.header.frame_id = self.target

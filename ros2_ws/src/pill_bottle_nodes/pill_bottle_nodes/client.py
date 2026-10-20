@@ -13,7 +13,7 @@ from tf2_ros import Buffer, TransformListener
 from pill_bottle_interfaces.msg import BottleState, Detections, GripperView
 from pill_bottle_interfaces.srv import MoveJoints, PlanGrasp
 
-from .common import frame_position, image_to_numpy, wait_future
+from .common import frame_position, image_to_numpy, update_joints, wait_future
 
 
 class PillClient(Node):
@@ -42,10 +42,7 @@ class PillClient(Node):
 
     # ---- topics ----
     def _on_joints(self, msg):
-        for n, p in zip(msg.name, msg.position):
-            self.joints[n] = p
-        for n, e in zip(msg.name, msg.effort):
-            self.efforts[n] = e
+        update_joints(self.joints, self.efforts, msg)
 
     def _store(self, key, msg):
         with self._events[key]:

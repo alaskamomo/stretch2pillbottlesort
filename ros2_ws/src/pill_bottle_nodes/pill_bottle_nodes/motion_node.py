@@ -15,7 +15,7 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 
 from pill_bottle_interfaces.srv import MoveJoints
 
-from .common import wait_future
+from .common import update_joints, wait_future
 
 # Hard limits checked before anything is sent (driver limits are wider; these keep tests safe).
 LIMITS = {
@@ -47,8 +47,7 @@ class MotionNode(Node):
         self.get_logger().info("Motion node ready: /pill_bottle/move_joints")
 
     def on_joints(self, msg):
-        for n, p in zip(msg.name, msg.position):
-            self.joints[n] = p
+        update_joints(self.joints, None, msg)
 
     def check(self, names, positions):
         if len(names) != len(positions) or not names:

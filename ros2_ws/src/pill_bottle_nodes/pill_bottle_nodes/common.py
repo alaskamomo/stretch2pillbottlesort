@@ -82,6 +82,23 @@ def depth_to_meters(msg):
     return d.astype(np.float32)
 
 
+# ---------- joint states ----------
+
+ARM_SEGMENTS = ("joint_arm_l0", "joint_arm_l1", "joint_arm_l2", "joint_arm_l3")
+
+
+def update_joints(joints, efforts, msg):
+    """Merge a JointState into dicts. The merged /joint_states on Stretch lists the arm as four telescoping
+    segments (joint_arm_l0..l3) and leaves out wrist_extension, so rebuild it as their sum."""
+    for n, pos in zip(msg.name, msg.position):
+        joints[n] = pos
+    if efforts is not None:
+        for n, e in zip(msg.name, msg.effort):
+            efforts[n] = e
+    if "wrist_extension" not in msg.name and all(n in joints for n in ARM_SEGMENTS):
+        joints["wrist_extension"] = sum(joints[n] for n in ARM_SEGMENTS)
+
+
 # ---------- tf ----------
 
 def lookup_matrix(tf_buffer, target, source, stamp=None, timeout_s=0.5):

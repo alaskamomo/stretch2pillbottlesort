@@ -8,7 +8,7 @@ from tf2_ros import Buffer, TransformListener
 
 from pill_bottle_interfaces.srv import PlanGrasp
 
-from .common import frame_position
+from .common import frame_position, update_joints
 from .geometry import PLANNER_SETTINGS as SETTINGS, grasp_center_at_yaw0, plan_grasp
 
 
@@ -25,13 +25,14 @@ class GraspPlannerNode(Node):
         self.get_logger().info("Grasp planner ready: /pill_bottle/plan_grasp")
 
     def on_joints(self, msg):
-        for n, p in zip(msg.name, msg.position):
-            self.joints[n] = p
+        update_joints(self.joints, None, msg)
 
     def on_plan(self, req, res):
         p = {k: self.get_parameter(k).value for k in SETTINGS}
         if "wrist_extension" not in self.joints or "joint_lift" not in self.joints:
-            res.success, res.message = False, "No /joint_states yet. Is the Stretch driver running?"
+            missing = [n for n in ("wrist_extension", "joint_lift") if n not in self.joints]
+            res.success, res.message = False, (f"/joint_states has no {missing} yet "
+                                               f"(seen {len(self.joints)} joints). Is the Stretch driver running?")
             return res
         try:
             wrist = frame_position(self.tf_buffer, "base_link", "link_wrist_yaw")

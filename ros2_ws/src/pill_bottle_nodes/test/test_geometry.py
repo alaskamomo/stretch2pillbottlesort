@@ -126,3 +126,16 @@ def test_plan_counts_grasp_depth_against_arm_limit():
     # end caps would reach at 0.48 m, but mid-finger needs 0.53 m > 0.50 m: not reachable from here
     r = plan_grasp((0.0, -0.98, 0.79), "upright", 0.75, 0.0, ext=0.1, lift=0.8, g0=g0, p=P)
     assert r["next_step"] == "rotate_base"
+
+
+def test_wrist_extension_rebuilt_from_segments():
+    from types import SimpleNamespace
+
+    from pill_bottle_nodes.common import update_joints
+    msg = SimpleNamespace(name=["joint_lift", "joint_arm_l0", "joint_arm_l1", "joint_arm_l2", "joint_arm_l3",
+                                "joint_gripper_finger_left"],
+                          position=[0.8, 0.05, 0.05, 0.05, 0.05, -0.028], effort=[0, 0, 0, 0, 0, -6.6])
+    joints, efforts = {}, {}
+    update_joints(joints, efforts, msg)
+    assert joints["wrist_extension"] == pytest.approx(0.20)
+    assert efforts["joint_gripper_finger_left"] == -6.6

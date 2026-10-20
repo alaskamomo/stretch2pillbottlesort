@@ -1,0 +1,227 @@
+<title>Pill Bottle Node Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one wide wiring diagram (left = sensors, middle = perception, right = decisions), then the tester matrix. */
+:root {
+  --bg: #f5f7f8; --surface: #ffffff; --fg: #1b232b; --muted: #5a6670;
+  --line: #c6cfd6; --accent: #0e6e66; --accent-soft: #e2f1ef; --driver: #eceff2;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12171b; --surface: #1a2026; --fg: #e3e8ec; --muted: #94a1ab;
+  --line: #34404a; --accent: #4fc2b6; --accent-soft: #173431; --driver: #222a31; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12171b; --surface: #1a2026; --fg: #e3e8ec; --muted: #94a1ab;
+  --line: #34404a; --accent: #4fc2b6; --accent-soft: #173431; --driver: #222a31; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); line-height: 1.5; }
+main { max-width: 1120px; margin: 0 auto; padding-block: 32px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 28px; }
+h1 { font-size: 1.6rem; margin: 0; text-wrap: balance; }
+h2 { font-size: 1.1rem; margin: 0 0 10px; }
+.lede { color: var(--muted); max-width: 68ch; margin: 6px 0 0; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+.scroll { overflow-x: auto; }
+svg { display: block; width: 100%; min-width: 820px; height: auto; color: var(--fg); }
+.n-ours { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+.n-drv { fill: var(--driver); stroke: var(--line); stroke-width: 1.5; }
+.name { font-family: var(--mono); font-size: 13px; font-weight: 600; fill: currentColor; }
+.sub { font-family: var(--sans); font-size: 11px; fill: var(--muted); }
+.lbl { font-family: var(--sans); font-size: 11px; fill: var(--muted); }
+.e { fill: none; stroke: currentColor; stroke-width: 1.4; }
+.e.srv { stroke-dasharray: 5 4; }
+figcaption { color: var(--muted); font-size: 0.9rem; margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px 22px; }
+.key { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 22px; height: 14px; border-radius: 3px; display: inline-block; }
+.sw.ours { background: var(--accent-soft); border: 1.5px solid var(--accent); }
+.sw.drv { background: var(--driver); border: 1.5px solid var(--line); }
+.ln { width: 28px; border-top: 1.5px solid var(--fg); display: inline-block; }
+.ln.dash { border-top-style: dashed; }
+table { border-collapse: collapse; width: 100%; min-width: 860px; font-size: 0.92rem; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+td code { font-family: var(--mono); font-size: 0.85rem; }
+td:first-child code { color: var(--accent); font-weight: 600; }
+.pill { font-size: 0.78rem; padding: 2px 8px; border-radius: 99px; white-space: nowrap; border: 1px solid var(--line); }
+.pill.still { color: var(--muted); }
+.pill.moves { color: var(--accent); border-color: var(--accent); }
+.sub2 { font-size: 0.78rem; color: var(--muted); }
+td:nth-child(2), td:nth-child(3) { max-width: 26ch; }
+.tablewrap { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; overflow-x: auto; }
+</style>
+
+<main>
+  <header>
+    <h1>Pill Bottle Node Map</h1>
+    <p class="lede">ROS 2 Jazzy layout for the Stretch 2 pick-and-verify demo. Each existing script becomes one node, and every node can be started on its own with a tester so perception, distance, gripper vision, planning and motion can be checked separately.</p>
+  </header>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1100 500" role="img" aria-label="Node graph: the head camera feeds the bottle detector and localizer, the gripper camera feeds gripper vision, and the task manager reads both, asks the grasp planner for joint targets, and sends them through the motion node to the Stretch driver.">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <!-- edges -->
+      <path class="e" d="M230,68 H316" marker-end="url(#arrow)"/>
+      <text class="lbl" x="275" y="60" text-anchor="middle">color image</text>
+
+      <path class="e" d="M125,40 V20 H725 V36" marker-end="url(#arrow)"/>
+      <text class="lbl" x="425" y="14" text-anchor="middle">aligned depth + camera_info</text>
+
+      <path class="e" d="M530,68 H616" marker-end="url(#arrow)"/>
+      <text class="lbl" x="575" y="60" text-anchor="middle">detections</text>
+
+      <path class="e" d="M530,186 H575 V84 H616" marker-end="url(#arrow)"/>
+      <text class="lbl" x="583" y="140">tf</text>
+
+      <path class="e srv" d="M620,212 H534" marker-end="url(#arrow)"/>
+      <text class="lbl" x="575" y="230" text-anchor="middle">trajectory</text>
+
+      <path class="e" d="M830,68 H896" marker-end="url(#arrow)"/>
+      <text class="lbl" x="865" y="60" text-anchor="middle">state</text>
+
+      <path class="e srv" d="M900,198 H834" marker-end="url(#arrow)"/>
+      <text class="lbl" x="865" y="190" text-anchor="middle">move</text>
+
+      <path class="e srv" d="M900,328 H834" marker-end="url(#arrow)"/>
+      <text class="lbl" x="865" y="320" text-anchor="middle">plan</text>
+
+      <path class="e" d="M230,458 H316" marker-end="url(#arrow)"/>
+      <text class="lbl" x="275" y="450" text-anchor="middle">mono image</text>
+
+      <path class="e" d="M530,458 H896" marker-end="url(#arrow)"/>
+      <text class="lbl" x="715" y="450" text-anchor="middle">/pill_bottle/gripper_view</text>
+
+      <!-- nodes -->
+      <rect class="n-drv" x="20" y="40" width="210" height="56" rx="6"/>
+      <text class="name" x="125" y="64" text-anchor="middle">realsense_camera</text>
+      <text class="sub" x="125" y="82" text-anchor="middle">head D435i (stretch_core launch)</text>
+
+      <rect class="n-ours" x="320" y="40" width="210" height="56" rx="6"/>
+      <text class="name" x="425" y="64" text-anchor="middle">bottle_detector</text>
+      <text class="sub" x="425" y="82" text-anchor="middle">wraps detect_bottles.py (YOLO)</text>
+
+      <rect class="n-ours" x="620" y="40" width="210" height="56" rx="6"/>
+      <text class="name" x="725" y="64" text-anchor="middle">bottle_localizer</text>
+      <text class="sub" x="725" y="82" text-anchor="middle">depth → x,y,z + orientation</text>
+
+      <rect class="n-drv" x="320" y="170" width="210" height="56" rx="6"/>
+      <text class="name" x="425" y="194" text-anchor="middle">stretch_driver</text>
+      <text class="sub" x="425" y="212" text-anchor="middle">Hello Robot (owns the hardware)</text>
+
+      <rect class="n-ours" x="620" y="170" width="210" height="56" rx="6"/>
+      <text class="name" x="725" y="194" text-anchor="middle">motion_node</text>
+      <text class="sub" x="725" y="212" text-anchor="middle">arm / lift / wrist / base moves</text>
+
+      <rect class="n-ours" x="620" y="300" width="210" height="56" rx="6"/>
+      <text class="name" x="725" y="324" text-anchor="middle">grasp_planner</text>
+      <text class="sub" x="725" y="342" text-anchor="middle">wraps stretch_fk.py (URDF)</text>
+
+      <rect class="n-ours" x="20" y="430" width="210" height="56" rx="6"/>
+      <text class="name" x="125" y="454" text-anchor="middle">gripper_camera</text>
+      <text class="sub" x="125" y="472" text-anchor="middle">claw OV9281 on /dev/video6</text>
+
+      <rect class="n-ours" x="320" y="430" width="210" height="56" rx="6"/>
+      <text class="name" x="425" y="454" text-anchor="middle">gripper_vision</text>
+      <text class="sub" x="425" y="472" text-anchor="middle">wraps gripper_cam.py</text>
+
+      <rect class="n-ours" x="900" y="40" width="180" height="446" rx="6"/>
+      <text class="name" x="990" y="66" text-anchor="middle">task_manager</text>
+      <text class="sub" x="990" y="84" text-anchor="middle">state machine (full_run.py)</text>
+      <text class="sub" x="990" y="250" text-anchor="middle">search</text>
+      <text class="sub" x="990" y="268" text-anchor="middle">approach (drive / turn)</text>
+      <text class="sub" x="990" y="286" text-anchor="middle">reach pregrasp</text>
+      <text class="sub" x="990" y="304" text-anchor="middle">refine with claw cam</text>
+      <text class="sub" x="990" y="380" text-anchor="middle">grasp</text>
+      <text class="sub" x="990" y="398" text-anchor="middle">hold up + verify</text>
+      <text class="sub" x="990" y="416" text-anchor="middle">place</text>
+      <text class="sub" x="990" y="440" text-anchor="middle">miss → retry, 4 tries max</text>
+    </svg>
+    </div>
+    <figcaption>
+      <span class="key"><span class="sw ours"></span>our nodes</span>
+      <span class="key"><span class="sw drv"></span>Hello Robot nodes</span>
+      <span class="key"><span class="ln"></span>topic (streams data)</span>
+      <span class="key"><span class="ln dash"></span>service / action (request → result)</span>
+      <span class="key">topics: <code>/pill_bottle/detections</code>, <code>/pill_bottle/state</code>, <code>/pill_bottle/gripper_view</code> · services: <code>/pill_bottle/plan_grasp</code>, <code>/pill_bottle/move_joints</code></span>
+    </figcaption>
+  </figure>
+
+  <section>
+    <h2>Component testing strategy</h2>
+    <p class="lede">For each tester, start the robot (<code>ros2 launch pill_bottle_nodes robot.launch.py</code>), then the nodes it needs (<code>ros2 launch pill_bottle_nodes nodes.launch.py stage:=…</code>), then the tester (<code>ros2 run pill_bottle_nodes test_…</code>). Run the testers top to bottom. Each one assumes the ones above it pass, so when something breaks, the first tester that fails points to the component at fault. Pass targets are starting values to tighten after the first measurements.</p>
+    <div class="tablewrap">
+    <table>
+      <thead><tr><th>Tester</th><th>What the component does</th><th>How to test</th><th>Expected outcome (pass)</th><th>Robot</th></tr></thead>
+      <tbody>
+        <tr><td><code>test_cameras</code><br><span class="sub2">stage:=cameras</span></td>
+          <td>Streams head color + aligned depth and the claw's mono image</td>
+          <td>Launch, check rates with <code>ros2 topic hz</code>, save one frame from each camera</td>
+          <td>Head color and depth at 15 Hz or more, claw at 10 Hz or more; head frame upright after rotation; claw frame shows the fingertips</td>
+          <td><span class="pill still">still</span></td></tr>
+        <tr><td><code>test_detector</code><br><span class="sub2">stage:=detector</span></td>
+          <td>Finds pill_bottle, cap and label boxes in the head image</td>
+          <td>Bottle on table and floor at 0.5, 1.0 and 1.5 m; 10 frames each; saves annotated images</td>
+          <td>Bottle found in at least 9 of 10 frames at each distance, confidence 0.4 or higher, box on the bottle</td>
+          <td><span class="pill still">still</span></td></tr>
+        <tr><td><code>test_distance</code><br><span class="sub2">stage:=distance</span></td>
+          <td>Turns a box + depth into x, y, z from the robot base and labels the bottle upright, tilted or lying</td>
+          <td>Place the bottle on 5 tape-measured spots, in each orientation</td>
+          <td>Position within 2 cm up to 1 m (4 cm at 1.5 m); orientation label correct every time</td>
+          <td><span class="pill still">still</span></td></tr>
+        <tr><td><code>test_gripper_vision</code><br><span class="sub2">stage:=gripper_vision</span></td>
+          <td>Finds the bottle in the claw image and reports its center offset and orientation</td>
+          <td>Hold the bottle centered between the fingertips, then 3 cm left and 3 cm right</td>
+          <td>Bottle seen in all three; offset sign matches the direction it was moved</td>
+          <td><span class="pill still">still</span></td></tr>
+        <tr><td><code>test_planner</code><br><span class="sub2">stage:=planner</span></td>
+          <td>Converts the bottle pose into lift, arm and wrist targets, or a base move if out of reach</td>
+          <td>Dry run on a bottle that is close, at the edge of reach, and out of reach</td>
+          <td>In reach: targets inside limits (lift 0.05–1.05 m, arm 0–0.50 m, wrist ±0.6 rad). Out of reach: a drive of 1 m or less. Nothing moves</td>
+          <td><span class="pill still">still</span></td></tr>
+        <tr><td><code>test_motion</code><br><span class="sub2">stage:=motion</span></td>
+          <td>Sends every move to the Stretch driver and refuses unsafe ones</td>
+          <td>Asks for an out-of-range lift (must be refused), then nudges each joint 2 cm or 0.2 rad and back</td>
+          <td>Unsafe goal refused; each joint arrives within 1 cm (lift, arm) or 0.05 rad (wrist, head)</td>
+          <td><span class="pill moves">a little</span></td></tr>
+        <tr><td><code>test_gripper</code><br><span class="sub2">stage:=gripper</span></td>
+          <td>The claw by itself: how far it closes empty, on the bottle, and whether it holds</td>
+          <td>Close empty, close on a bottle held between the pads, then let go and watch the finger for 8 s</td>
+          <td>Bottle keeps the fingers 0.05 rad more open than empty; still holding after 8 s, drift within 0.02 rad; prints the empty/holding threshold</td>
+          <td><span class="pill moves">claw only</span></td></tr>
+        <tr><td><code>test_arm</code><br><span class="sub2">stage:=arm</span></td>
+          <td>Moves the claw to the pregrasp point, 10 cm short of the bottle</td>
+          <td>Confirm before each move, hand on the runstop; measure the final gap</td>
+          <td>Claw stops 10 cm (±2 cm) from the bottle, stays at least 3.5 cm above the table, no contact</td>
+          <td><span class="pill moves">arm</span></td></tr>
+        <tr><td><code>test_base</code><br><span class="sub2">stage:=base</span></td>
+          <td>Turns in place in 60° steps and drives up to 1 m toward the bottle</td>
+          <td>Tape marks on the floor; command one turn and one 0.5 m drive</td>
+          <td>Turn within ±5°, drive within ±3 cm; wrist is stowed before the base moves</td>
+          <td><span class="pill moves">base</span></td></tr>
+        <tr><td><code>test_grasp</code><br><span class="sub2">stage:=grasp</span></td>
+          <td>Only the grasp: approach, claw-camera refine, close, lift 5 cm and watch the grip, put it back</td>
+          <td>Bottle upright on the table, 5+ runs; change one setting at a time and compare with <code>grasp_report</code></td>
+          <td>Result is HELD (not SLIPPING, DROPPED or MISSED); each run logged with the claw image from just before closing</td>
+          <td><span class="pill moves">arm + base</span></td></tr>
+        <tr><td><code>test_task</code><br><span class="sub2">stage:=full</span></td>
+          <td>The task manager's search and planning, with nothing moving</td>
+          <td>Dry run from where the robot stands; then <code>task_manager -p stop_after:=grasp</code>, <code>stop_after:=verify</code></td>
+          <td>Finds the bottle and prints a reach plan; later stages stop where asked</td>
+          <td><span class="pill still">still</span></td></tr>
+        <tr><td><code>task_manager</code><br><span class="sub2">stage:=full</span></td>
+          <td>Search, approach, reach, refine with claw camera, grasp, verify, place</td>
+          <td>Bottle upright, knocked over, and elevated; one deliberate miss</td>
+          <td>Bottle held up to the head camera for 8 s and detected, then set down; after a miss it retries, stopping after 4 attempts</td>
+          <td><span class="pill moves">arm + base</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+</main>

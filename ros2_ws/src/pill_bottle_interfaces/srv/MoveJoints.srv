@@ -1,0 +1,7 @@
+# Move Stretch joints through the driver and wait until done.
+# Base joints (translate_mobile_base, rotate_mobile_base) must be sent alone, one per call.
+string[] names
+float64[] positions
+---
+bool success
+string message

@@ -57,7 +57,7 @@ def test_cameras():
     while time.time() < end:
         rclpy.spin_once(n, timeout_sec=0.1)
     rates = {k: c / secs for k, c in n.count.items()}
-    need = {"head color": 10, "head depth": 10, "head info": 10, "claw camera": 5}
+    need = {"head color": 10, "head depth": 10, "head info": 10, "claw camera": 2}   # gripper_vision runs at 2 Hz
     allok = True
     for k, hz in rates.items():
         allok &= _verdict(hz >= need[k], f"{k:12s} {hz:5.1f} Hz on {n.topics[k][0]} (want >= {need[k]})")
@@ -71,7 +71,8 @@ def test_cameras():
                           f"depth {d.width}x{d.height} matches color {c.width}x{c.height} (aligned)")
         dm = depth_to_meters(d)
         valid = float((dm > 0).mean()) * 100
-        allok &= _verdict(valid > 50, f"{valid:.0f}% of depth pixels valid (want > 50%)")
+        _verdict(valid > 30, f"{valid:.0f}% of depth pixels valid in the whole view (want > 30%; "
+                             "far walls, windows and shiny floors read as 0. test_distance checks the bottle itself)")
     if "claw camera" in n.last:
         cv2.imwrite(_out("claw.jpg"), image_to_numpy(n.last["claw camera"]))
         print(f"       saved {_out('claw.jpg')}: the fingertips should be visible.")
@@ -218,7 +219,7 @@ def test_arm():
     print("Hand on the runstop. Each move is asked first; 'n' stops.")
     steps = [("retract the arm", dict(wrist_extension=0.0)),
              ("raise the lift to travel height", dict(joint_lift=plan.lift_clear)),
-             ("point the wrist out and open the claw", dict(joint_wrist_yaw=0.0, gripper_aperture=0.08))]
+             ("point the wrist out and open the claw", dict(joint_wrist_yaw=0.0, gripper_aperture=0.10))]
     if plan.base_translate:
         steps.append((f"drive the base {plan.base_translate:+.3f} m", dict(translate_mobile_base=plan.base_translate)))
     steps += [("extend the arm to pregrasp", dict(wrist_extension=plan.arm_pregrasp)),
@@ -234,7 +235,7 @@ def test_arm():
         try:
             g = c.position("link_grasp_center")
             gap = math.hypot(st.position.x - g[0], st.position.y - g[1])
-            _verdict(abs(gap - 0.10) <= 0.02, f"claw is {gap * 100:.1f} cm from the bottle center (want 10 +- 2 cm)")
+            _verdict(abs(gap - 0.10) <= 0.02, f"end caps are {gap * 100:.1f} cm from the bottle center (want 10 +- 2 cm)")
             _verdict(g[2] - st.surface_z >= 0.035, f"claw is {(g[2] - st.surface_z) * 100:.1f} cm above the surface "
                                                   "(want >= 3.5 cm)")
         except Exception as e:
@@ -317,10 +318,11 @@ def test_motion():
 # ---------------- gripper (no arm motion) ----------------
 
 def test_gripper():
-    """Calibrate and test the claw by itself: empty close, close on the bottle, and a hold test in your hand.
+    """Calibrate and test the claw by itself: empty close, close on the bottle, and a hold test.
 
-    Run with stage:=gripper (only motion_node is needed).
-    Prints the threshold to use for empty_finger_below and whether the grip is strong enough.
+    Run with stage:=gripper (only motion_node is needed). The arm and base don't move.
+    Stretch's fingers bend around the bottle, so the finger POSITION reads the same empty or holding;
+    this measures the motor EFFORT instead and prints the grip_effort_min to use.
     """
     import csv
     c = start("test_gripper")
@@ -337,50 +339,57 @@ def test_gripper():
         ok, msg = c.move(gripper_aperture=sq)
         time.sleep(0.5)
         f, e = c.finger()
-        if f is None:
-            raise RuntimeError("no joint_gripper_finger_left in /joint_states")
-        print(f"   {label}: {msg} after {time.time() - t0:.1f} s -> finger {f:+.3f} rad, effort {e if e is not None else '?'}")
-        return f, e
+        if f is None or e is None:
+            raise RuntimeError("no joint_gripper_finger_left position/effort in /joint_states")
+        print(f"   {label}: {msg} after {time.time() - t0:.1f} s -> finger {f:+.3f} rad, effort {e:+.2f}")
+        return f, abs(e)
 
-    print(f"Settings: open {op} m, squeeze {sq} m. The arm and base do NOT move.")
-    c.move(gripper_aperture=op)
-    time.sleep(0.5)
-    print(f"1) Open: finger {c.finger()[0]} rad")
-    if not ask("2) Close with NOTHING in the claw?"):
-        return
-    f_empty, _ = close_read("empty close")
-    c.move(gripper_aperture=op)
-    if not ask("3) Hold the bottle upright between the finger pads (pads at its middle). Close?"):
-        return
-    f_bottle, e_bottle = close_read("close on bottle")
-    gap = f_bottle - f_empty
-    _verdict(gap > 0.05, f"bottle keeps the fingers {gap:.3f} rad more open than empty (want > 0.05)")
-    thr = round((f_empty + f_bottle) / 2, 3)
-    print(f"   -> use empty_finger_below:={thr} (halfway between empty {f_empty:+.3f} and bottle {f_bottle:+.3f})")
-
-    if ask(f"4) Hold test: let go of the bottle (keep a hand under it). Watch for {hold_s:.0f} s?"):
-        path = _out(f"gripper_hold_{time.strftime('%Y%m%d_%H%M%S')}.csv")
-        rows, end = [], time.time() + hold_s
-        while time.time() < end:
-            f, e = c.finger()
-            rows.append((round(time.time() - end + hold_s, 2), f, e))
-            time.sleep(0.1)
-        with open(path, "w", newline="") as fh:
-            w = csv.writer(fh)
-            w.writerow(["t_s", "finger_rad", "effort"])
-            w.writerows(rows)
-        fs = [r[1] for r in rows if r[1] is not None]
-        drift = fs[-1] - fs[0] if fs else 0.0
-        held = fs and fs[-1] > thr
-        _verdict(bool(held), f"still holding after {hold_s:.0f} s (finger {fs[-1]:+.3f}, threshold {thr})")
-        _verdict(abs(drift) <= 0.02, f"finger changed {drift:+.3f} rad while holding (want within +-0.02)")
-        print(f"   saved {path}")
-        if not held or abs(drift) > 0.02:
-            print("   Grip is weak: try a harder squeeze, e.g. -p gripper_squeeze:=-0.03, and grip lower on the bottle.")
-    if ask("5) Open the claw (catch the bottle)?"):
+    try:
+        print(f"Settings: open {op} m, squeeze {sq} m. The arm and base do NOT move.")
         c.move(gripper_aperture=op)
-    c.close()
-    rclpy.try_shutdown()
+        time.sleep(0.5)
+        print(f"1) Open: finger {c.finger()[0]:+.3f} rad")
+        if not ask("2) Close with NOTHING in the claw?"):
+            return
+        _, e_empty = close_read("empty close")
+        c.move(gripper_aperture=op)
+        if not ask("3) Hold the bottle upright between the finger pads (pads at its middle). Close?"):
+            return
+        _, e_bottle = close_read("close on bottle")
+        _verdict(e_bottle > max(3 * e_empty, e_empty + 2.0),
+                 f"effort on the bottle {e_bottle:.2f} vs empty {e_empty:.2f} (want clearly higher)")
+        thr = round((e_empty + e_bottle) / 2, 2)
+        print(f"   -> use grip_effort_min:={thr} (halfway between empty {e_empty:.2f} and bottle {e_bottle:.2f})")
+
+        if ask(f"4) Hold test: let go of the bottle (keep a hand under it). Watch for {hold_s:.0f} s?"):
+            path = _out(f"gripper_hold_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+            rows, t_end = [], time.time() + hold_s
+            while time.time() < t_end:
+                f, e = c.finger()
+                rows.append((round(hold_s - (t_end - time.time()), 2), f, e))
+                time.sleep(0.1)
+            with open(path, "w", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(["t_s", "finger_rad", "effort"])
+                w.writerows(rows)
+            es = [abs(r[2]) for r in rows if r[2] is not None]
+            e_end = sum(es[-5:]) / len(es[-5:]) if es else 0.0
+            _verdict(e_end >= thr, f"effort after {hold_s:.0f} s {e_end:.2f} (threshold {thr})")
+            _verdict(e_end >= 0.5 * e_bottle, f"effort kept {e_end / e_bottle * 100 if e_bottle else 0:.0f}% of "
+                                              "the closing effort (want >= 50%)")
+            held = ask("   Is the bottle still in the claw right now?")
+            print(f"   saved {path}")
+            if held and e_end >= thr:
+                print("   Grip works on the bottle. Next: test_grasp with -p grip_effort_min:=" + str(thr))
+            elif held:
+                print("   The bottle is held but the effort sagged. Use a lower grip_effort_min, or a harder squeeze.")
+            else:
+                print("   It dropped: try a harder squeeze (-p gripper_squeeze:=-0.03) and grip lower on the bottle.")
+        if ask("5) Open the claw (catch the bottle)?"):
+            c.move(gripper_aperture=op)
+    finally:
+        c.close()
+        rclpy.try_shutdown()
 
 
 # ---------------- the grasp (the gripper problem) ----------------
@@ -390,7 +399,8 @@ def test_grasp():
 
     Run with stage:=full. Asks before every move unless -p yes:=true.
     Each run adds a line to ~/pill_tests/grasp_log.jsonl and saves the claw image from just before closing,
-    so you can compare settings, e.g.  -p gripper_squeeze:=-0.03 -p extra_reach:=0.02
+    so you can compare settings, e.g. -p gripper_squeeze:=-0.03, or change how deep the claw goes while it runs:
+        ros2 param set /grasp_planner grasp_depth 0.06
     """
     import json
 
@@ -445,11 +455,12 @@ def test_grasp():
 _GRASP_HINTS = {
     "held": "Grip is good. Next: run task_manager with -p stop_after:=verify.",
     "slipping": ("The bottle moved in the claw while lifting. Try a harder squeeze (-p gripper_squeeze:=-0.03) "
-                 "and a deeper reach (-p extra_reach:=0.02)."),
-    "dropped": ("It closed on the bottle but lost it when lifting. Check the claw image: if the bottle is at the "
-                "fingertips, add reach (-p extra_reach:=0.02); if it's too high or low, check test_distance's z."),
+                 "and a deeper grasp (ros2 param set /grasp_planner grasp_depth 0.06)."),
+    "dropped": ("It closed on the bottle but lost it when lifting. Check the claw image: if the bottle is near the "
+                "end caps, grasp deeper (ros2 param set /grasp_planner grasp_depth 0.06); if it's too high or low, "
+                "check test_distance's z."),
     "missed": ("The claw closed on nothing. Look at the claw image from just before closing: if the bottle is off to "
-               "one side, check gripcam_sign / test_gripper_vision; if it's short, raise extra_reach; if it's not "
+               "one side, check gripcam_sign / test_gripper_vision; if the claw stopped short, raise grasp_depth; if it's not "
                "there at all, re-run test_distance."),
 }
 
@@ -467,9 +478,9 @@ def grasp_report():
         for line in f:
             r = json.loads(line)
             s = r.get("settings", {})
-            key = (s.get("gripper_squeeze"), s.get("extra_reach"), r.get("orientation"))
+            key = (s.get("gripper_squeeze"), r.get("grasp_depth"), r.get("orientation"))
             groups[key].append(r.get("outcome"))
-    print(f"{'squeeze':>8} {'reach':>6} {'orientation':>11}  runs  held  slipping  dropped  missed")
+    print(f"{'squeeze':>8} {'depth':>6} {'orientation':>11}  runs  held  slipping  dropped  missed")
     for (sq, er, ori), outs in sorted(groups.items(), key=lambda kv: str(kv[0])):
         n = len(outs)
         print(f"{sq!s:>8} {er!s:>6} {ori!s:>11}  {n:4d}  {outs.count('held'):4d}  {outs.count('slipping'):8d}  "

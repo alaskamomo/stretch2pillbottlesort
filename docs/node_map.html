@@ -163,7 +163,7 @@ td:nth-child(2), td:nth-child(3) { max-width: 26ch; }
         <tr><td><code>test_cameras</code><br><span class="sub2">stage:=cameras</span></td>
           <td>Streams head color + aligned depth and the claw's mono image</td>
           <td>Launch, check rates with <code>ros2 topic hz</code>, save one frame from each camera</td>
-          <td>Head color and depth at 15 Hz or more, claw at 10 Hz or more; head frame upright after rotation; claw frame shows the fingertips</td>
+          <td>Head color and depth at 10 Hz or more, claw at 2 Hz or more; head frame upright after rotation; claw frame shows the fingertips</td>
           <td><span class="pill still">still</span></td></tr>
         <tr><td><code>test_detector</code><br><span class="sub2">stage:=detector</span></td>
           <td>Finds pill_bottle, cap and label boxes in the head image</td>
@@ -193,7 +193,7 @@ td:nth-child(2), td:nth-child(3) { max-width: 26ch; }
         <tr><td><code>test_gripper</code><br><span class="sub2">stage:=gripper</span></td>
           <td>The claw by itself: how far it closes empty, on the bottle, and whether it holds</td>
           <td>Close empty, close on a bottle held between the pads, then let go and watch the finger for 8 s</td>
-          <td>Bottle keeps the fingers 0.05 rad more open than empty; still holding after 8 s, drift within 0.02 rad; prints the empty/holding threshold</td>
+          <td>Grip effort on the bottle clearly above empty (measured: 6.6 vs 0.1); still holding after 8 s with at least half the closing effort; prints grip_effort_min</td>
           <td><span class="pill moves">claw only</span></td></tr>
         <tr><td><code>test_arm</code><br><span class="sub2">stage:=arm</span></td>
           <td>Moves the claw to the pregrasp point, 10 cm short of the bottle</td>

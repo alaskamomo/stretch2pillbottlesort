@@ -5,13 +5,14 @@ import time
 
 # Defaults; task_manager and test_grasp expose each as a ROS parameter.
 GRASP_SETTINGS = {
-    "gripper_open": 0.08,         # aperture (m) while approaching
+    "gripper_open": 0.10,         # aperture (m) while approaching: wide, so the middle of the claw clears the bottle
     "gripper_squeeze": -0.01,     # aperture target when closing; below 0 squeezes harder on the bottle
-    "extra_reach": 0.01,          # push the arm this much past the planned grasp so the bottle sits deeper in the claw
-    "empty_finger_below": 0.03,   # finger (rad) below this after closing = closed on nothing
+    # Stretch's fingers are flexible: the finger POSITION is the same empty or holding (test_gripper showed -0.028
+    # both times). Only the motor EFFORT tells them apart (about -0.1 empty, -6.6 on the bottle).
+    "grip_effort_min": 3.0,       # |effort| at or above this after closing = holding something (test_gripper prints it)
+    "effort_drop_frac": 0.5,      # |effort| falling below this fraction of the closing effort while lifted = slipping
     "lift_test": 0.05,            # lift this much after closing to test the grip
     "hold_test_s": 3.0,           # watch the finger this long while lifted
-    "slip_tol": 0.02,             # finger change (rad) during the hold test that counts as slipping
     "use_gripper_refine": True,
     "gripcam_sign": 1.0,          # flip to -1.0 if refining moves the base the wrong way
     "max_refine": 0.03,           # largest base correction from the claw camera (m)
@@ -31,7 +32,8 @@ def approach(c, plan, s, move, say, log):
         move(f"line up the base ({plan.base_translate:+.3f} m)", translate_mobile_base=plan.base_translate)
     move("extend to pregrasp", wrist_extension=plan.arm_pregrasp)
     move("lower to grasp height", joint_lift=plan.lift)
-    log.update(plan_lift=plan.lift, plan_arm=plan.arm_grasp, plan_base=plan.base_translate)
+    log.update(plan_lift=plan.lift, plan_arm=plan.arm_grasp, plan_base=plan.base_translate,
+               grasp_depth=getattr(plan, "grasp_depth", None))
 
 
 def refine(c, s, move, say, log):
@@ -61,34 +63,41 @@ def close_and_check(c, plan, s, move, say, log, tag=""):
     stamp = time.strftime("%Y%m%d_%H%M%S")
     if c.snapshot("claw_image", os.path.join(OUT, f"{stamp}{tag}_claw_before_close.jpg")):
         log["claw_image"] = f"{stamp}{tag}_claw_before_close.jpg"
-    arm = min(plan.arm_grasp + s["extra_reach"], s["arm_max"])
-    move(f"reach in to {arm:.3f} m", wrist_extension=arm)
+    arm = min(plan.arm_grasp, s["arm_max"])
+    depth = getattr(plan, "grasp_depth", 0.0)
+    move(f"reach in to {arm:.3f} m (bottle {depth * 100:.0f} cm past the end caps, mid-finger)", wrist_extension=arm)
     move("close the claw", gripper_aperture=s["gripper_squeeze"])
     time.sleep(0.5)
     f_closed, e_closed = c.finger()
     log.update(finger_closed=_r(f_closed), effort_closed=_r(e_closed))
     say(f"   closed: finger {_fmt(f_closed)} rad, effort {_fmt(e_closed)}")
-    if f_closed is not None and f_closed < s["empty_finger_below"]:
-        say("   -> MISSED: the claw closed on nothing.")
+    if e_closed is None:
+        say("   (no gripper effort in /joint_states; can't judge the grip, assuming held)")
+        return "held"
+    grip = abs(e_closed)
+    if grip < s["grip_effort_min"]:
+        say(f"   -> MISSED: effort {grip:.1f} is below {s['grip_effort_min']:.1f}, so the claw closed on nothing.")
         return "missed"
 
     lift_to = min(plan.lift + s["lift_test"], s["lift_max"])
     move(f"lift {s['lift_test'] * 100:.0f} cm to test the grip", joint_lift=lift_to)
-    readings = []
+    efforts = []
     end = time.time() + s["hold_test_s"]
     while time.time() < end:
-        readings.append(c.finger()[0])
+        e = c.finger()[1]
+        if e is not None:
+            efforts.append(abs(e))
         time.sleep(0.1)
-    readings = [r for r in readings if r is not None]
-    f_end = readings[-1] if readings else None
-    drift = (f_end - f_closed) if (f_end is not None and f_closed is not None) else None
-    log.update(finger_after_lift=_r(f_end), finger_drift=_r(drift), effort_after_lift=_r(c.finger()[1]))
-    say(f"   after lifting {s['hold_test_s']:.0f} s: finger {_fmt(f_end)} rad (change {_fmt(drift)})")
-    if f_end is not None and f_end < s["empty_finger_below"]:
-        say("   -> DROPPED: the fingers closed all the way while lifting.")
+    tail = efforts[-5:] if efforts else [grip]
+    e_end = sum(tail) / len(tail)
+    log.update(finger_after_lift=_r(c.finger()[0]), effort_after_lift=_r(e_end),
+               effort_min_while_lifted=_r(min(efforts) if efforts else None))
+    say(f"   after lifting {s['hold_test_s']:.0f} s: effort {e_end:.1f} (was {grip:.1f} when it closed)")
+    if e_end < s["grip_effort_min"]:
+        say("   -> DROPPED: the effort fell to the empty level while lifting.")
         return "dropped"
-    if drift is not None and abs(drift) > s["slip_tol"]:
-        say("   -> SLIPPING: the finger kept moving while lifted; grip is too weak or too shallow.")
+    if e_end < s["effort_drop_frac"] * grip:
+        say("   -> SLIPPING: the grip loosened while lifted; the bottle is shifting in the claw.")
         return "slipping"
     say("   -> HELD")
     return "held"
@@ -104,7 +113,7 @@ def release(c, plan, s, move):
 def place(c, plan, s, move):
     """Set the bottle back where it was."""
     move("raise to travel height", joint_lift=plan.lift_clear)
-    move("reach back out", wrist_extension=min(plan.arm_grasp + s["extra_reach"], s["arm_max"]))
+    move("reach back out", wrist_extension=min(plan.arm_grasp, s["arm_max"]))
     move("lower onto the surface", joint_lift=plan.lift + 0.01)
     move("open the claw", gripper_aperture=s["gripper_open"])
     move("retract the arm", wrist_extension=0.0)

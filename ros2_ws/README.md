@@ -58,13 +58,13 @@ component at fault. There is one tester per node, plus two for the grasp.
 
 | Tester | Tests node | `stage:=` | Moves? | Pass when |
 | --- | --- | --- | --- | --- |
-| `test_cameras` | `gripper_camera` (+ head camera) | `cameras` | no | Head color/depth at 10 Hz or more, claw at 5 Hz or more, depth aligned, `~/pill_tests/head_upright.jpg` upright |
+| `test_cameras` | `gripper_camera` (+ head camera) | `cameras` | no | Head color/depth at 10 Hz or more, claw at 2 Hz or more, depth aligned, `~/pill_tests/head_upright.jpg` upright |
 | `test_detector` | `bottle_detector` | `detector` | no | Bottle found in 9 of 10 frames at confidence 0.4 or more |
 | `test_distance` | `bottle_localizer` | `distance` | no | x, y, z steady within 1 cm and within 2 cm of a tape measure (up to 1 m) |
 | `test_gripper_vision` | `gripper_vision` | `gripper_vision` | no | Bottle seen in 15 of 20 readings; offset follows the bottle |
 | `test_planner` | `grasp_planner` | `planner` | no | Reach targets inside limits, or a sensible base turn or drive |
 | `test_motion` | `motion_node` | `motion` | a little | Unsafe goal refused; every joint arrives within tolerance (lift/arm 1 cm, wrist/head 0.05 rad) |
-| `test_gripper` | the claw | `gripper` | claw only | Bottle keeps the fingers 0.05 rad more open than empty; holds for 8 s with drift within 0.02 rad |
+| `test_gripper` | the claw | `gripper` | claw only | Effort on the bottle clearly above empty; still holding after 8 s with at least half the closing effort |
 | `test_arm` | approach only | `arm` | arm | Claw stops 10 cm (±2 cm) from the bottle, at least 3.5 cm above the table |
 | `test_base` | base moves | `base` | base | 60° turn within ±5°, 0.20 m drive within ±3 cm |
 | `test_grasp` | the grasp | `grasp` | arm | Result is HELD; logged to `~/pill_tests/grasp_log.jsonl` |
@@ -79,13 +79,20 @@ attempt ends as one of four results:
 | Result | Meaning | What to change first |
 | --- | --- | --- |
 | HELD | Grip is good | Nothing; move on to `task_manager -p stop_after:=verify` |
-| SLIPPING | Finger kept moving while lifted | Harder squeeze `-p gripper_squeeze:=-0.03`, deeper reach `-p extra_reach:=0.02` |
-| DROPPED | Gripped, then lost it while lifting | Look at the claw image: bottle at the fingertips means more `extra_reach`; wrong height means check `test_distance` z |
-| MISSED | Closed on nothing | Look at the claw image: off to one side means `gripcam_sign` or `test_gripper_vision`; short means more `extra_reach` |
+| SLIPPING | Grip effort sagged below half while lifted | Harder squeeze `-p gripper_squeeze:=-0.03`, deeper grasp `ros2 param set /grasp_planner grasp_depth 0.06` |
+| DROPPED | Grip effort fell to the empty level while lifting | Look at the claw image: bottle near the end caps means a bigger `grasp_depth`; wrong height means check `test_distance` z |
+| MISSED | Closed on nothing | Look at the claw image: off to one side means `gripcam_sign` or `test_gripper_vision`; stopped short means a bigger `grasp_depth` |
+
+The claw grabs with the **middle of the fingers**, not the end caps: the arm reaches `grasp_depth` past
+`link_grasp_center` (the point between the end caps), with the claw opened wide so it clears the bottle.
+
+The grip is judged by the gripper motor's **effort**, not the finger position. Stretch's fingers are flexible
+and bend around the bottle, so the finger position reads the same empty or holding (-0.028 rad both times on
+our robot). The effort is what changes: about 0.1 empty and 6.6 on the bottle.
 
 Workflow:
 
-1. `test_gripper` (stage `gripper`) first. It prints the right `empty_finger_below` for your claw and shows
+1. `test_gripper` (stage `gripper`) first. It prints the right `grip_effort_min` for your claw and shows
    whether the squeeze can hold the bottle at all, with no arm motion.
 2. `test_grasp` (stage `grasp`) with the bottle upright on the table, 5 or more times. Each run saves the claw
    image from just before closing to `~/pill_tests/`.
@@ -108,8 +115,11 @@ To see what the cameras see: `ros2 run rqt_image_view rqt_image_view /pill_bottl
 - `bottle_detector`: `rotate` (`cw`, the same as `ROTATE` in `full_run.py`) and `conf`.
 - `bottle_localizer`: `min_conf` 0.4, `bottle_radius`, and the upright/lying angle thresholds.
 - `grasp_planner`: `bottle_length`, `pregrasp_gap` 0.10, `safe_clearance` 0.12, `max_drive` 0.5.
-- `task_manager` and `test_grasp`: `gripper_squeeze` -0.01, `extra_reach` 0.01, `empty_finger_below` 0.03,
-  `lift_test` 0.05, `slip_tol` 0.02, `gripcam_sign` 1.0. `task_manager` also takes `search_pans`, `max_attempts` 4,
+- `grasp_planner`: `grasp_depth` 0.05, how far past the end caps the claw reaches so the bottle sits in the
+  middle of the fingers. Measure it on your claw: from the end caps to the middle of the finger pads.
+  Change it while running with `ros2 param set /grasp_planner grasp_depth 0.06`.
+- `task_manager` and `test_grasp`: `gripper_open` 0.10, `gripper_squeeze` -0.01, `grip_effort_min` 3.0,
+  `effort_drop_frac` 0.5, `lift_test` 0.05, `gripcam_sign` 1.0. `task_manager` also takes `search_pans`, `max_attempts` 4,
   `hold_seconds` 8, `stop_after` (find, plan, grasp, verify) and `confirm` (ask before every move).
 
 Change any of these with `--ros-args -p name:=value`.

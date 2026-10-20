@@ -74,8 +74,10 @@ def test_plan_reach_on_arm_side():
     g0 = (0.0, -0.6, 0.75)                      # grasp center with arm at 0.1 m, lift 0.8 m
     r = plan_grasp((0.01, -0.9, 0.79), "upright", 0.75, 0.0, ext=0.1, lift=0.8, g0=g0, p=P)
     assert r["next_step"] == "reach" and r["success"]
-    assert abs(r["arm_grasp"] - 0.4) < 1e-9          # 0.1 + (-0.6 - -0.9)
-    assert abs(r["arm_pregrasp"] - 0.3) < 1e-9
+    # end caps reach the bottle at 0.1 + (-0.6 - -0.9) = 0.4; the grasp goes grasp_depth further, mid-finger
+    assert abs(r["arm_grasp"] - (0.4 + P["grasp_depth"])) < 1e-9
+    assert abs(r["arm_pregrasp"] - 0.3) < 1e-9       # pregrasp: end caps still 10 cm short
+    assert r["grasp_depth"] == P["grasp_depth"]
     assert abs(r["lift"] - (0.8 + 0.75 + 0.45 * 0.08 - 0.75)) < 1e-9
     assert r["base_translate"] == 0.0
 
@@ -117,3 +119,10 @@ def test_plan_rejects_unreachable_height():
 def test_look_at():
     pan, tilt = look_at((0.0, 0.0, 1.3), (0.0, -1.0, 0.3))
     assert pan == pytest.approx(-math.pi / 2) and tilt == pytest.approx(-math.pi / 4)
+
+
+def test_plan_counts_grasp_depth_against_arm_limit():
+    g0 = (0.0, -0.6, 0.75)
+    # end caps would reach at 0.48 m, but mid-finger needs 0.53 m > 0.50 m: not reachable from here
+    r = plan_grasp((0.0, -0.98, 0.79), "upright", 0.75, 0.0, ext=0.1, lift=0.8, g0=g0, p=P)
+    assert r["next_step"] == "rotate_base"

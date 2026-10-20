@@ -7,7 +7,8 @@ float64 base_rotate   # rad, counter-clockwise (rotate_base)
 float64 base_translate # m, forward (drive_base, or a small alignment before reach)
 float64 lift_clear    # lift height to travel at, above the bottle (m)
 float64 lift          # lift height for the grasp (m)
-float64 arm_pregrasp  # arm extension that stops short of the bottle (m)
-float64 arm_grasp     # arm extension with the bottle between the fingers (m)
+float64 arm_pregrasp  # arm extension with the end caps pregrasp_gap short of the bottle (m)
+float64 arm_grasp     # arm extension with the bottle in the middle of the fingers (m)
+float64 grasp_depth   # how far past the end caps arm_grasp reaches (m)
 float64 wrist_yaw     # rad
 string message

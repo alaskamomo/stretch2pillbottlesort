@@ -118,6 +118,9 @@ PLANNER_SETTINGS = {
     # grasp geometry (same meaning as in full_run.py)
     "safe_clearance": 0.12, "pregrasp_gap": 0.10, "min_table_clearance": 0.035,
     "lying_min_clear": 0.02, "grasp_frac_upright": 0.45, "lying_align_deg": 35.0,
+    # How far past the end caps (link_grasp_center) to push, so the bottle sits in the MIDDLE of the fingers
+    # instead of being pinched by the caps. Measure on your claw: end caps -> middle of the finger pads.
+    "grasp_depth": 0.05,
     # base moves
     "front_band": 0.15, "drive_tol": 0.02, "max_drive": 0.5,
 }
@@ -146,7 +149,7 @@ def plan_grasp(bottle, orientation, surface_z, axis_yaw, ext, lift, g0, p):
     """
     bx, by, bz = bottle
     out = dict(success=True, next_step="reach", base_rotate=0.0, base_translate=0.0, lift_clear=0.0,
-               lift=0.0, arm_pregrasp=0.0, arm_grasp=0.0, wrist_yaw=0.0, message="")
+               lift=0.0, arm_pregrasp=0.0, arm_grasp=0.0, wrist_yaw=0.0, grasp_depth=0.0, message="")
     side_dist = abs(g0[1]) + p["arm_mid"]      # how far to the side a bottle should be for a mid-length reach
 
     # 1) In front of the robot: drive until it's at the right distance, then turn so the arm faces it.
@@ -168,8 +171,9 @@ def plan_grasp(bottle, orientation, surface_z, axis_yaw, ext, lift, g0, p):
         return out
 
     # 3) On the arm's side: how far must the arm reach?
-    arm_grasp = ext + (g0[1] - by)
-    if arm_grasp > p["arm_max"] or arm_grasp < p["arm_min_grasp"]:
+    arm_tips = ext + (g0[1] - by)              # end caps at the bottle's center
+    arm_grasp = arm_tips + p["grasp_depth"]    # bottle in the middle of the fingers
+    if arm_grasp > p["arm_max"] or arm_tips < p["arm_min_grasp"]:
         out.update(next_step="rotate_base", base_rotate=wrap(math.atan2(by, bx)),
                    message=(f"Arm would need {arm_grasp:.2f} m (range {p['arm_min_grasp']:.2f}-{p['arm_max']:.2f}); "
                             "turning to face the bottle so the base can drive."))
@@ -210,9 +214,11 @@ def plan_grasp(bottle, orientation, surface_z, axis_yaw, ext, lift, g0, p):
 
     out.update(base_translate=dx if abs(dx) > p["drive_tol"] else 0.0,
                lift_clear=lift_clear, lift=lift_grasp,
-               arm_pregrasp=max(0.0, arm_grasp - p["pregrasp_gap"]), arm_grasp=arm_grasp,
+               arm_pregrasp=max(0.0, arm_tips - p["pregrasp_gap"]), arm_grasp=arm_grasp,
+               grasp_depth=p["grasp_depth"],
                wrist_yaw=0.0,
-               message=f"Reach: lift {lift_grasp:.3f} m, arm {arm_grasp:.3f} m, base {dx:+.3f} m.")
+               message=(f"Reach: lift {lift_grasp:.3f} m, arm {arm_grasp:.3f} m "
+                        f"({p['grasp_depth'] * 100:.0f} cm past the end caps), base {dx:+.3f} m."))
     return out
 
 

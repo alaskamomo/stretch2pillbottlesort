@@ -105,6 +105,7 @@ class YoloDetector(Node):
         self.depth_scale = p("depth_scale", 0.001).value          # 16UC1 depth is millimeters
         self.depth_offset = p("depth_offset_m", 0.02).value       # front surface -> bottle center
         self.max_depth = p("max_detect_depth_m", 3.0).value       # ignore look-alikes farther than this
+        self.size_warned = False
         self.publish_debug = p("publish_debug_image", True).value
         color_topic = p("color_topic", "/camera/color/image_raw").value
         depth_topic = p("depth_topic", "/camera/aligned_depth_to_color/image_raw").value
@@ -164,7 +165,7 @@ class YoloDetector(Node):
         for conf, box in boxes:
             d, cu, cv, n_valid = self.box_depth(box, depth, raw_w, raw_h)
             if d is None:
-                rejected.append((conf, box, "no depth"))
+                rejected.append((conf, box, f"no depth ({n_valid} px)"))
             elif d > self.max_depth:
                 rejected.append((conf, box, f"{d:.1f} m, too far"))
             elif chosen is None:
@@ -195,18 +196,32 @@ class YoloDetector(Node):
             self.dbg_pub.publish(numpy_to_image(view, color_msg.header))
 
     def box_depth(self, box, depth, raw_w, raw_h):
-        """Median depth over the middle half of the box (box edges hit the table/background)."""
+        """Depth at the bottle. Tries the middle half of the box, then the whole box, then a
+        slightly bigger box (nearest surface). Handles a depth image with a different size
+        than the color image by scaling pixel coordinates. Returns (depth, u, v, n_valid)."""
         u1, v1, u2, v2 = box_to_raw(box, self.rotate_mode, raw_w, raw_h)
         cu, cv = (u1 + u2) / 2, (v1 + v2) / 2
-        hw, hh = max(2, (u2 - u1) / 4), max(2, (v2 - v1) / 4)
-        region = depth[int(max(0, cv - hh)):int(min(raw_h, cv + hh)),
-                       int(max(0, cu - hw)):int(min(raw_w, cu + hw))].astype(np.float64)
-        if depth.dtype == np.uint16:
-            region = region * self.depth_scale
-        valid = region[np.isfinite(region) & (region > 0.1) & (region < 8.0)]
-        if valid.size < 10:
-            return None, cu, cv, int(valid.size)
-        return float(np.median(valid)) + self.depth_offset, cu, cv, int(valid.size)
+        dh, dw = depth.shape[:2]
+        sx, sy = dw / raw_w, dh / raw_h            # 1.0 when depth is aligned at the same size
+        if (dw, dh) != (raw_w, raw_h) and not self.size_warned:
+            self.get_logger().warn(f"depth image is {dw}x{dh} but color is {raw_w}x{raw_h}; scaling coordinates")
+            self.size_warned = True
+
+        def valid_in(fx, pct=None):
+            hw, hh = max(2, (u2 - u1) * fx / 2), max(2, (v2 - v1) * fx / 2)
+            r = depth[int(max(0, (cv - hh) * sy)):int(min(dh, (cv + hh) * sy)),
+                      int(max(0, (cu - hw) * sx)):int(min(dw, (cu + hw) * sx))].astype(np.float64)
+            if depth.dtype == np.uint16:
+                r = r * self.depth_scale
+            return r[np.isfinite(r) & (r > 0.1) & (r < 8.0)]
+
+        for fx, use_near in ((0.5, False), (1.0, False), (1.5, True)):
+            valid = valid_in(fx)
+            if valid.size >= 10:
+                # in the bigger box, the bottle is the NEAREST thing (background is farther)
+                d = float(np.percentile(valid, 20)) if use_near else float(np.median(valid))
+                return d + self.depth_offset, cu, cv, int(valid.size)
+        return None, cu, cv, int(valid.size)
 
     @staticmethod
     def label(img, box, text, color):
@@ -214,8 +229,9 @@ class YoloDetector(Node):
         try:
             import cv2
             x1, y1 = int(box[0]), max(18, int(box[1]) - 6)
-            cv2.putText(img, text, (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 4, cv2.LINE_AA)
-            cv2.putText(img, text, (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.rectangle(img, (x1, y1 - th - 6), (x1 + tw + 6, y1 + 4), (255, 255, 255), -1)
+            cv2.putText(img, text, (x1 + 3, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
         except ImportError:
             pass
 

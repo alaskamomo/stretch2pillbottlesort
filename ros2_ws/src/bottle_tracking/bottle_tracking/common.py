@@ -159,8 +159,18 @@ class DetectionCollector:
         pts = []
         for _, p, frame, conf in got:
             base, fixed, cam = self._convert(p, frame)
-            if base is not None and fixed is not None:
-                pts.append((base, fixed, cam, conf))
+            if base is None or fixed is None:
+                continue
+            # same sanity limits as bottle_memory: not on a wall/shelf, not across the room
+            if not (-0.05 <= fixed[2] <= 1.40) or (base[0] ** 2 + base[1] ** 2) ** 0.5 > 3.0:
+                continue
+            pts.append((base, fixed, cam, conf))
+        # drop stray detections more than 10 cm from the median (another object, a depth glitch)
+        if len(pts) >= 3:
+            med = [sorted(q[1][k] for q in pts)[len(pts) // 2] for k in range(3)]
+            keep = [q for q in pts if sum((q[1][k] - med[k]) ** 2 for k in range(3)) ** 0.5 <= 0.10]
+            if len(keep) >= max(2, len(pts) // 2):
+                pts = keep
         source = "detections"
         if len(pts) < min_samples:
             if self.memory is None or not self.memory.detection_fresh(max_age=seconds + 1.0):

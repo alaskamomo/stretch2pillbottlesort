@@ -173,7 +173,7 @@ class PickTester(Node):
             t["notes"] = plan_text + (f"\npicture: {pic}" if pic else "")
 
             if self.EXECUTE and full["ok"]:
-                self.execute(full, t)
+                self.execute(full, t, i)
 
     def finish(self):
         if self.pictures:
@@ -186,23 +186,40 @@ class PickTester(Node):
         print(f"Summary: python3 testing/summarize_results.py --test {self.TEST_ID} --session latest")
 
     # ------------------------------------------------------------------ T1b execution
-    def execute(self, full, t):
+    def reacquire(self):
+        """After driving: find the bottle again. Look at the saved spot first; if it isn't
+        there, sweep the head (the base does not move). Returns a measurement or None."""
+        self.mem.set_tracking(True)
+        if not self.mem.wait_for(lambda: self.det.sees(1.0), 4.0):
+            print("  Can't see the bottle at the saved spot after driving; looking around with the head...")
+            call_trigger(self.search_client, timeout=120.0)
+        return self.det.measure(3.0)
+
+    def execute(self, full, t, i):
         if ask("Check the path is clear. Enter to DRIVE + GRAB, s to skip: ").lower() == "s":
             t["outcome"], t["notes"] = "ERROR", "skipped by user"
             return
         t0 = time.time()
         self.mem.set_tracking(True)
-        abort = lambda: self.mem.get().get("status") == "MISSING"
-        ok, failed = self.robot.execute_steps(full["base"]["steps"], abort, self.get_logger().info)
+        # Don't stop the drive if the head briefly loses the bottle while the base turns;
+        # it is found again (and the trial fails safely) after the move.
+        ok, failed = self.robot.execute_steps(full["base"]["steps"], None, self.get_logger().info)
         if not ok:
-            t["outcome"] = "NOT_FOUND" if abort() else "ERROR"
-            t["notes"] = f"base step {failed} failed" + (" (bottle missing)" if abort() else "")
+            t["outcome"], t["notes"] = "ERROR", f"base step {failed} failed or timed out"
             return
 
         # look again up close and re-plan the arm from the fresh measurement
-        m = self.det.measure(3.0)
+        m = self.reacquire()
+        close = self.snap.save(f"{self.TEST_ID}_{self.log.session_id}_trial{i}_closeup",
+                               [f"{self.TEST_ID} trial {i}: after driving",
+                                "bottle seen" if m else "bottle NOT seen"])
+        if close:
+            print(f"Close-up picture: {close}")
         if m is None:
-            t["outcome"], t["notes"] = "NOT_FOUND", "lost the bottle after driving"
+            t["outcome"] = "NOT_FOUND"
+            t["notes"] = (f"lost the bottle after driving (detections received: {self.det.received})"
+                          + (f" | close-up: {close}" if close else ""))
+            print("NOT FOUND after driving: the head looked at the saved spot and around, and didn't see the bottle.")
             return
         off = m["base"][0] - self.arm.arm_x_offset_m
         if self.arm.arm_line_tol_m < abs(off) <= self.max_correction:

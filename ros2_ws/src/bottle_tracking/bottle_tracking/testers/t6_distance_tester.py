@@ -24,7 +24,7 @@ from rclpy.node import Node
 from std_srvs.srv import Trigger
 
 from bottle_tracking import geometry as geo
-from bottle_tracking.common import DetectionCollector, MemoryWatcher, call_trigger
+from bottle_tracking.common import DetectionCollector, MemoryWatcher, SnapshotSaver, call_trigger
 from bottle_tracking.stretch_interface import StretchInterface, declare
 from bottle_tracking.test_logger import TestLogger
 from bottle_tracking.testers.tester_common import ask, ask_float, distance_bucket, pause, run_tester
@@ -36,7 +36,8 @@ class DistanceTester(Node):
         cb = ReentrantCallbackGroup()
         self.robot = StretchInterface(self, cb)
         self.mem = MemoryWatcher(self, cb)
-        self.det = DetectionCollector(self, self.robot, cb)
+        self.det = DetectionCollector(self, self.robot, cb, memory=self.mem)
+        self.snap = SnapshotSaver(self, cb)
         self.search_client = self.create_client(Trigger, "/head_search/search_head_only", callback_group=cb)
         self.trials = int(declare(self, "trials", 5))
         self.pause_s = declare(self, "pause_s", 60.0)
@@ -61,11 +62,16 @@ class DistanceTester(Node):
             if self.start_pose and pose and geo.dist((*self.start_pose[:2], 0), (*pose[:2], 0)) > 0.02:
                 print("WARNING: the base moved since the first spot; distances may not compare.")
 
+            name = f"T6_{self.log.session_id}_spot{i}"
             print("\n" + "=" * 60)
             if m is None:
                 print("Does NOT see the pill bottle.")
+                print(f"  detections received by this tester: {self.det.received}")
+                pic = self.snap.save(name, [f"T6 spot {i}: does NOT see the pill bottle"])
+                print(f"  picture: {pic}" if pic else "  (no camera picture received)")
                 print("=" * 60)
                 t["condition"], t["outcome"] = "not_found", "NOT_FOUND"
+                t["notes"] = f"picture: {pic}" if pic else ""
                 t["metrics"] = {"search_time_s": info.get("search_time_s")}
                 return
             print("SEES the pill bottle")
@@ -73,6 +79,9 @@ class DistanceTester(Node):
             if m["camera_range_m"] is not None:
                 print(f"  Distance from head camera (straight line): {m['camera_range_m']:.3f} m")
             print(f"  Steadiness: {m['spread_cm']:.2f} cm spread over {m['n']} detections")
+            pic = self.snap.save(name, [f"T6 spot {i}: {m['base_distance_m']:.3f} m from base",
+                                        f"camera range {m['camera_range_m']:.3f} m" if m["camera_range_m"] else ""])
+            print(f"  Picture: {pic}" if pic else "  (no camera picture received)")
             print("=" * 60)
 
             true_d = ask_float("Tape-measured distance from base center to the bottle (m)")
@@ -93,6 +102,8 @@ class DistanceTester(Node):
                     notes.append(f"error {signed:+.1f} cm")
             else:
                 notes.append("no tape measurement")
+            if pic:
+                notes.append(f"picture: {pic}")
             t["outcome"] = "SUCCESS" if good else "MISS"
             t["notes"] = "; ".join(notes)
 

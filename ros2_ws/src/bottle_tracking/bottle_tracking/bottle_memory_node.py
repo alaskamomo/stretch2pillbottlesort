@@ -56,6 +56,10 @@ class BottleMemoryNode(Node):
         self.view_cone = declare(self, "view_cone_deg", 15.0)
         self.max_range = declare(self, "max_detect_range_m", 2.5)
         rate = declare(self, "publish_rate_hz", 10.0)
+        # Ignore detections that can't be the bottle on a table/floor (wall art, shelves, ceiling)
+        self.min_z = declare(self, "min_bottle_height_m", -0.05)
+        self.max_z = declare(self, "max_bottle_height_m", 1.40)
+        self.max_dist = declare(self, "max_bottle_distance_m", 3.0)
 
         self.pose = None          # (x, y, z) in fixed frame
         self.status = "NONE"
@@ -95,6 +99,12 @@ class BottleMemoryNode(Node):
         if fixed is None:
             self.get_logger().warn(f"no TF {msg.header.frame_id} -> {self.robot.fixed_frame}",
                                    throttle_duration_sec=5.0)
+            return
+        base = self.robot.point_to(p, msg.header.frame_id, self.robot.base_frame, stamp)
+        if not (self.min_z <= fixed[2] <= self.max_z) or (
+                base is not None and (base[0] ** 2 + base[1] ** 2) ** 0.5 > self.max_dist):
+            self.get_logger().warn(f"ignored detection at x={fixed[0]:.2f} y={fixed[1]:.2f} z={fixed[2]:.2f} "
+                                   f"(too high/low or too far to be the bottle)", throttle_duration_sec=5.0)
             return
         now = self.now()
 

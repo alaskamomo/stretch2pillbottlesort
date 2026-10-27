@@ -36,13 +36,14 @@
     tracking_lead_s: 0.4                  # aim ahead of the turn by this much time (fixes lag)
 
     # ---- YOLO detector (head camera) ----
-    model_path: ""                        # or pass model_path:=... to the launch file
+    model_path: "/home/hello-robot/pill_bottle_robot/final_pill_bottle.pt"
     class_name: pill_bottle
     conf_threshold: 0.5
     rotate_image: cw                      # cw if you trained on upright images, none if on raw sideways ones
     max_rate_hz: 5.0
     depth_scale: 0.001
     depth_offset_m: 0.02                  # bottle front surface -> center
+    max_detect_depth_m: 3.0               # ignore look-alikes farther than this from the camera
     publish_debug_image: true
     color_topic: /camera/color/image_raw
     depth_topic: /camera/aligned_depth_to_color/image_raw
@@ -71,6 +72,9 @@
     moved_confirm_count: 3                # detections needed to accept a moved bottle
     missing_timeout_s: 3.0                # looking at the saved spot this long with no bottle = MISSING
     view_cone_deg: 15.0
+    min_bottle_height_m: -0.05            # ignore detections below the floor...
+    max_bottle_height_m: 1.40             # ...or higher than a table/counter (wall art, shelves)
+    max_bottle_distance_m: 3.0
     max_detect_range_m: 2.5
 
     # ---- head-first search ----

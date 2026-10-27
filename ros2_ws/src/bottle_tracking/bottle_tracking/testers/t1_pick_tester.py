@@ -2,7 +2,7 @@
 """
 T1a / T1b - find the pill bottle with the head camera, plan how to get it, (T1b) do it.
 
-  T1a (plan only, base and arm do NOT move; the head looks around):
+  T1a (plan only; ONLY the head moves, the base and arm never move):
     ros2 run bottle_tracking t1a_plan_tester --ros-args --params-file $P -p trials:=3
 
   T1b (plan, then drive the base and grab the bottle):
@@ -10,15 +10,17 @@ T1a / T1b - find the pill bottle with the head camera, plan how to get it, (T1b)
 
 Each trial:
   1. Pause so you can move the bottle (Enter to skip the wait).
-  2. The head searches for the bottle (the base only turns if the head can't find it).
-  3. Prints the full plan: base moves to put the arm beside the bottle, then the
-     lift / arm / gripper steps to grab the middle of it.
-  T1a: you say whether the plan looks right.
-  T1b: drives the base, looks again up close, re-plans the arm from the fresh look,
-       grabs, lifts, holds 5 s, then you say what happened. Then it puts the bottle back.
+  2. The head looks for the bottle. The base does NOT turn to search.
+  3. Prints PLAN and the full plan (base moves, then lift / arm / gripper steps),
+     or NO PLAN, why, and what would make a new plan possible.
+  T1b: drives the base, looks again up close, re-plans the arm, grabs, lifts,
+       holds 5 s, then you say what happened. Then it puts the bottle back.
+
+At the end it saves a picture for every trial (camera view + top-down drawing of the
+planned approach) and one overview picture of all trials, in ~/stretch_test_results/images/.
 
 Run `ros2 run bottle_tracking calibrate_arm` once first so the arm numbers are real.
-Needs: driver, bottle_tracking launch with the YOLO detector.
+Needs: driver, head camera, bottle_tracking launch with the YOLO detector.
 """
 
 import json
@@ -29,25 +31,55 @@ from rclpy.node import Node
 from std_srvs.srv import Trigger
 
 from bottle_tracking import geometry as geo
+from bottle_tracking import plan_drawing
 from bottle_tracking.approach_planner_node import declare_approach_config
-from bottle_tracking.common import DetectionCollector, MemoryWatcher, call_trigger
+from bottle_tracking.common import DetectionCollector, MemoryWatcher, SnapshotSaver, call_trigger
 from bottle_tracking.stretch_interface import StretchInterface, declare
 from bottle_tracking.test_logger import TestLogger
 from bottle_tracking.testers.tester_common import (ask, ask_yes, declare_arm_config, distance_bucket,
                                                    pause, run_tester)
 
 
+def how_to_replan(full, m, arm, cfg):
+    """Plain-language list of what would make a plan possible."""
+    if m is None:
+        return ["The head camera did not see the pill bottle.",
+                "To make a new plan: put the bottle where the head can see it (in front of or beside the "
+                "robot, on the table), or check the camera picture for why the detector missed it."]
+    reason = full["reason"] if full else ""
+    d = m["base_distance_m"]
+    tips = []
+    if "max approach" in reason:
+        tips.append(f"Move the bottle (or the robot) to within {cfg.max_approach_m:.1f} m; it is {d:.2f} m away. "
+                    f"Or raise max_approach_m in params.yaml.")
+    elif "lift range" in reason or "needs lift" in reason:
+        tips.append(f"Put the bottle at a height the lift can reach (about {arm.lift_min_m + arm.lift_grasp_z_offset_m:.2f} "
+                    f"to {arm.lift_max_m + arm.lift_grasp_z_offset_m - arm.lift_after_grasp_m:.2f} m); "
+                    f"it is at {m['fixed'][2]:.2f} m.")
+    elif "table clearance" in reason:
+        tips.append("Move the bottle closer to the table edge, or lower table_edge_to_bottle_m / "
+                    "min_table_clearance_m if the table is really that shallow.")
+    elif "arm line" in reason or "too far" in reason or "too close" in reason or "left side" in reason:
+        tips.append("The base move doesn't line the arm up well enough. Re-run calibrate_arm, "
+                    "then plan again.")
+    else:
+        tips.append("Move the bottle to a clear spot on the table in front of the robot and plan again.")
+    return [f"Reason: {reason}"] + tips
+
+
 class PickTester(Node):
     EXECUTE = False
-    TEST_ID, TEST_NAME = "T1a", "Find the bottle and plan the pick (no motion)"
+    TEST_ID, TEST_NAME = "T1a", "Find the bottle and plan the pick (head only, no base/arm motion)"
 
     def __init__(self):
         super().__init__(f"{self.TEST_ID.lower()}_pick_tester")
         cb = ReentrantCallbackGroup()
         self.robot = StretchInterface(self, cb)
         self.mem = MemoryWatcher(self, cb)
-        self.det = DetectionCollector(self, self.robot, cb)
-        self.search_client = self.create_client(Trigger, "/head_search/search", callback_group=cb)
+        self.det = DetectionCollector(self, self.robot, cb, memory=self.mem)
+        self.snap = SnapshotSaver(self, cb)
+        # head-only search: the base NEVER turns while looking for the bottle
+        self.search_client = self.create_client(Trigger, "/head_search/search_head_only", callback_group=cb)
         self.arm = declare_arm_config(self)
         self.approach_cfg = geo.approach_config_for_arm(self.arm, declare_approach_config(self))
         self.trials = int(declare(self, "trials", 3))
@@ -55,28 +87,20 @@ class PickTester(Node):
         self.hold_s = declare(self, "hold_s", 5.0)
         self.max_correction = declare(self, "max_correction_m", 0.15)
         self.log = TestLogger(self.TEST_ID, self.TEST_NAME)
+        self.pictures = []            # one composed picture per trial, for the overview at the end
 
     # ------------------------------------------------------------------ find + plan
     def find_bottle(self):
         self.mem.clear()
         time.sleep(0.3)
-        ok, msg = call_trigger(self.search_client, timeout=180.0)
+        ok, msg = call_trigger(self.search_client, timeout=120.0)
         try:
             info = json.loads(msg)
         except ValueError:
             info = {"error": msg}
         if not ok:
             return None, info
-        m = self.det.measure(2.0)
-        return m, info
-
-    def plan(self, m):
-        pose = self.robot.base_pose()
-        t = time.perf_counter()
-        full = geo.full_pick_plan(m["fixed"], pose, self.arm, self.approach_cfg)
-        plan_time = time.perf_counter() - t
-        print("\n" + geo.format_full_plan(full, self.robot.fixed_frame), flush=True)
-        return full, plan_time
+        return self.det.measure(3.0), info
 
     @staticmethod
     def plan_metrics(full, plan_time):
@@ -89,34 +113,77 @@ class PickTester(Node):
             out.update(arm_extension_m=full["arm"]["extension_m"], lift_m=full["arm"]["lift_grasp_m"])
         return out
 
+    def picture(self, i, m, full, start_pose, headline):
+        """Camera view + top-down plan drawing for this trial. Saved now, and kept for the overview."""
+        try:
+            cam = self.snap.grab([f"{self.TEST_ID} trial {i}: {headline}"] +
+                                 ([f"{m['base_distance_m']:.2f} m from the base"] if m else []))
+            title = "PLAN" if full is not None and full["ok"] else "NO PLAN"
+            drawing = plan_drawing.draw_plan(full, m["fixed"] if m else None, start_pose, self.arm,
+                                             f"Trial {i}: {title}")
+            pic = plan_drawing.compose(cam, drawing, f"{self.TEST_ID} trial {i}: {headline}")
+            self.pictures.append(pic)
+            return self.snap.write(f"{self.TEST_ID}_{self.log.session_id}_trial{i}", pic)
+        except Exception as e:      # a picture problem must never stop the test
+            print(f"  (could not make the picture: {e})")
+            return None
+
     # ------------------------------------------------------------------ trial
     def trial(self, i):
         pause(self.pause_s, f"Trial {i}/{self.trials}: put the pill bottle somewhere on the table.")
         with self.log.trial() as t:
+            start_pose = self.robot.base_pose() or (0.0, 0.0, 0.0)
             m, info = self.find_bottle()
-            if m is None:
-                t["outcome"], t["notes"] = "NOT_FOUND", info.get("found_with", info.get("error", ""))
-                t["metrics"] = {"search_time_s": info.get("search_time_s")}
-                print("Did NOT find the pill bottle.")
-                return
-            t["condition"] = distance_bucket(m["base_distance_m"])
-            print(f"\nFound the pill bottle {m['base_distance_m']:.2f} m from the base "
-                  f"(seen {m['n']} times, spread {m['spread_cm']:.1f} cm).")
-            full, plan_time = self.plan(m)
-            t["metrics"] = {"search_time_s": info.get("search_time_s"),
-                            "search_base_rotation_deg": info.get("base_rotation_deg"),
-                            "distance_m": m["base_distance_m"], "spread_cm": m["spread_cm"],
-                            **self.plan_metrics(full, plan_time)}
-            t["notes"] = geo.format_full_plan(full, self.robot.fixed_frame)
+            t["metrics"] = {"search_time_s": info.get("search_time_s")}
 
-            if not full["ok"]:
-                right = ask_yes("Is NO_PLAN correct (the bottle really can't be reached)?")
-                t["outcome"] = "SUCCESS" if right else "NO_PLAN"
+            print("\n" + "=" * 70)
+            if m is None:
+                print(f"NO PLAN  (trial {i})")
+                for line in how_to_replan(None, None, self.arm, self.approach_cfg):
+                    print(f"  {line}")
+                print(f"  (detections received by this tester: {self.det.received})")
+                pic = self.picture(i, None, None, start_pose, "NO PLAN - bottle not seen")
+                print(f"  Picture: {pic}" if pic else "")
+                print("=" * 70)
+                t["condition"], t["outcome"] = "not_found", "NOT_FOUND"
+                t["notes"] = "bottle not seen" + (f" | picture: {pic}" if pic else "")
                 return
-            if not self.EXECUTE:
-                t["outcome"] = "SUCCESS" if ask_yes("Does this plan look right?", True) else "MISS"
-                return
-            self.execute(full, t)
+
+            t0 = time.perf_counter()
+            full = geo.full_pick_plan(m["fixed"], start_pose, self.arm, self.approach_cfg)
+            plan_time = time.perf_counter() - t0
+            plan_text = geo.format_full_plan(full, self.robot.fixed_frame)
+            t["condition"] = distance_bucket(m["base_distance_m"])
+            t["metrics"].update(distance_m=m["base_distance_m"], spread_cm=m["spread_cm"],
+                                **self.plan_metrics(full, plan_time))
+
+            if full["ok"]:
+                print(f"PLAN  (trial {i}: bottle {m['base_distance_m']:.2f} m from the base)")
+                print(plan_text)
+                pic = self.picture(i, m, full, start_pose, f"PLAN - bottle {m['base_distance_m']:.2f} m away")
+                t["outcome"] = "SUCCESS"
+            else:
+                print(f"NO PLAN  (trial {i}: bottle {m['base_distance_m']:.2f} m from the base)")
+                for line in how_to_replan(full, m, self.arm, self.approach_cfg):
+                    print(f"  {line}")
+                pic = self.picture(i, m, full, start_pose, f"NO PLAN - {full['reason'][:50]}")
+                t["outcome"] = "NO_PLAN"
+            print(f"Picture: {pic}" if pic else "")
+            print("=" * 70)
+            t["notes"] = plan_text + (f"\npicture: {pic}" if pic else "")
+
+            if self.EXECUTE and full["ok"]:
+                self.execute(full, t)
+
+    def finish(self):
+        if self.pictures:
+            try:
+                overview = plan_drawing.stack(self.pictures)
+                path = self.snap.write(f"{self.TEST_ID}_{self.log.session_id}_all_plans", overview)
+                print(f"\nPictures of every planned approach: {path}")
+            except Exception as e:
+                print(f"(could not make the overview picture: {e})")
+        print(f"Summary: python3 testing/summarize_results.py --test {self.TEST_ID} --session latest")
 
     # ------------------------------------------------------------------ T1b execution
     def execute(self, full, t):
@@ -133,7 +200,7 @@ class PickTester(Node):
             return
 
         # look again up close and re-plan the arm from the fresh measurement
-        m = self.det.measure(2.0)
+        m = self.det.measure(3.0)
         if m is None:
             t["outcome"], t["notes"] = "NOT_FOUND", "lost the bottle after driving"
             return
@@ -142,7 +209,7 @@ class PickTester(Node):
             print(f"Bottle {off * 100:+.1f} cm off the arm line, correcting with a {off:+.3f} m drive")
             self.robot.switch_to_navigation_mode()
             self.robot.drive_by(off)
-            m = self.det.measure(2.0) or m
+            m = self.det.measure(3.0) or m
         arm_plan = geo.plan_arm(m["base"], self.arm)
         print("\n" + geo.format_arm_plan(arm_plan), flush=True)
         t["metrics"].update(final_off_arm_line_cm=(m["base"][0] - self.arm.arm_x_offset_m) * 100,
@@ -188,10 +255,12 @@ class PickTester(Node):
 
     def run(self):
         print(__doc__)
-        ask("Driver, launch and detector running? Press Enter to begin.")
-        for i in range(1, self.trials + 1):
-            self.trial(i)
-        print(f"\nSummary: python3 testing/summarize_results.py --test {self.TEST_ID} --session latest")
+        ask("Driver, camera and launch running? Press Enter to begin.")
+        try:
+            for i in range(1, self.trials + 1):
+                self.trial(i)
+        finally:
+            self.finish()
 
 
 class ExecuteTester(PickTester):

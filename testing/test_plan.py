@@ -8,13 +8,13 @@ Edit conditions / trials / metrics here when the plan changes.
 
 TESTS = {
     "T1a": {
-        "name": "Find the bottle and plan the pick (no motion)",
+        "name": "Find the bottle and plan the pick (head only, no base/arm motion)",
         "auto": "ros2 run bottle_tracking t1a_plan_tester --ros-args --params-file $P",
-        "setup": "Head searches for the bottle, then prints the base + arm plan. Base and arm don't move.",
+        "setup": "Head-only search (base never turns). Prints PLAN + the plan, or NO PLAN + why + how to fix.",
         "conditions": ["any_spot"],
         "trials": 3,
-        "success": "Bottle found, plan printed, plan looks right to you. NO_PLAN only when it really can't reach.",
-        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "NO_PLAN", "ERROR"],
+        "success": "Bottle in view -> PLAN printed. Saves a picture of every planned approach.",
+        "outcomes": ["SUCCESS", "NOT_FOUND", "NO_PLAN", "ERROR"],
         "metrics": ["search_time_s", "distance_m", "base_steps", "arm_extension_m"],
     },
     "T1b": {

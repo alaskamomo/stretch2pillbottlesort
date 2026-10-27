@@ -104,6 +104,7 @@ class YoloDetector(Node):
         self.max_rate = p("max_rate_hz", 5.0).value
         self.depth_scale = p("depth_scale", 0.001).value          # 16UC1 depth is millimeters
         self.depth_offset = p("depth_offset_m", 0.02).value       # front surface -> bottle center
+        self.max_depth = p("max_detect_depth_m", 3.0).value       # ignore look-alikes farther than this
         self.publish_debug = p("publish_debug_image", True).value
         color_topic = p("color_topic", "/camera/color/image_raw").value
         depth_topic = p("depth_topic", "/camera/aligned_depth_to_color/image_raw").value
@@ -154,43 +155,69 @@ class YoloDetector(Node):
         view = np.ascontiguousarray(rotate(color, self.rotate_mode))
 
         result = self.model(view, conf=self.conf_thr, classes=self.class_ids, verbose=False)[0]
-        best = None
-        for b in result.boxes:
-            c = float(b.conf[0])
-            if best is None or c > best[0]:
-                best = (c, [float(v) for v in b.xyxy[0]])
+        boxes = sorted(((float(b.conf[0]), [float(v) for v in b.xyxy[0]]) for b in result.boxes),
+                       key=lambda c: -c[0])
 
-        published = False
-        if best is not None:
-            conf, box = best
-            u1, v1, u2, v2 = box_to_raw(box, self.rotate_mode, raw_w, raw_h)
-            # median depth over the middle half of the box (edges hit the table/background)
-            cu, cv = (u1 + u2) / 2, (v1 + v2) / 2
-            hw, hh = max(2, (u2 - u1) / 4), max(2, (v2 - v1) / 4)
-            region = depth[int(max(0, cv - hh)):int(min(raw_h, cv + hh)),
-                           int(max(0, cu - hw)):int(min(raw_w, cu + hw))].astype(np.float64)
-            if depth.dtype == np.uint16:
-                region = region * self.depth_scale
-            valid = region[np.isfinite(region) & (region > 0.1) & (region < 5.0)]
-            if valid.size >= 10:
-                d = float(np.median(valid)) + self.depth_offset
-                x, y, z = deproject(cu, cv, d, self.K)
-                msg = PointStamped()
-                msg.header = color_msg.header
-                msg.point.x, msg.point.y, msg.point.z = x, y, z
-                self.det_pub.publish(msg)
-                self.info_pub.publish(String(data=json.dumps({
-                    "confidence": round(conf, 3), "pixel": [round(cu), round(cv)],
-                    "depth_m": round(d, 3), "valid_depth_pixels": int(valid.size),
-                    "box_rotated_image": [round(v) for v in box]})))
-                published = True
+        # Take the most confident box that has good depth AND is close enough to be the bottle.
+        # Far-away look-alikes (a bottle on a shelf across the room) are skipped.
+        chosen, rejected = None, []
+        for conf, box in boxes:
+            d, cu, cv, n_valid = self.box_depth(box, depth, raw_w, raw_h)
+            if d is None:
+                rejected.append((conf, box, "no depth"))
+            elif d > self.max_depth:
+                rejected.append((conf, box, f"{d:.1f} m, too far"))
+            elif chosen is None:
+                chosen = (conf, box, d, cu, cv, n_valid)
             else:
-                self.get_logger().warn("bottle seen but no valid depth at it (too close/far or shiny?)",
-                                       throttle_duration_sec=3.0)
+                rejected.append((conf, box, "lower confidence"))
+
+        if chosen is not None:
+            conf, box, d, cu, cv, n_valid = chosen
+            x, y, z = deproject(cu, cv, d, self.K)
+            msg = PointStamped()
+            msg.header = color_msg.header
+            msg.point.x, msg.point.y, msg.point.z = x, y, z
+            self.det_pub.publish(msg)
+            self.info_pub.publish(String(data=json.dumps({
+                "confidence": round(conf, 3), "pixel": [round(cu), round(cv)],
+                "depth_m": round(d, 3), "valid_depth_pixels": n_valid,
+                "box_rotated_image": [round(v) for v in box], "other_boxes": len(rejected)})))
+        elif boxes:
+            why = ", ".join(r[2] for r in rejected)
+            self.get_logger().warn(f"pill bottle box(es) seen but not used: {why}", throttle_duration_sec=3.0)
+
         if self.publish_debug and self.dbg_pub.get_subscription_count() > 0:
-            if best is not None:
-                draw_box(view, best[1], (0, 255, 0) if published else (0, 0, 255))
+            for conf, box, why in rejected:          # red = seen but not used
+                self.label(view, box, f"{conf:.2f} {why}", (0, 0, 255))
+            if chosen is not None:                    # green = the bottle it is using
+                self.label(view, chosen[1], f"pill_bottle {chosen[0]:.2f}  {chosen[2]:.2f} m", (0, 255, 0))
             self.dbg_pub.publish(numpy_to_image(view, color_msg.header))
+
+    def box_depth(self, box, depth, raw_w, raw_h):
+        """Median depth over the middle half of the box (box edges hit the table/background)."""
+        u1, v1, u2, v2 = box_to_raw(box, self.rotate_mode, raw_w, raw_h)
+        cu, cv = (u1 + u2) / 2, (v1 + v2) / 2
+        hw, hh = max(2, (u2 - u1) / 4), max(2, (v2 - v1) / 4)
+        region = depth[int(max(0, cv - hh)):int(min(raw_h, cv + hh)),
+                       int(max(0, cu - hw)):int(min(raw_w, cu + hw))].astype(np.float64)
+        if depth.dtype == np.uint16:
+            region = region * self.depth_scale
+        valid = region[np.isfinite(region) & (region > 0.1) & (region < 8.0)]
+        if valid.size < 10:
+            return None, cu, cv, int(valid.size)
+        return float(np.median(valid)) + self.depth_offset, cu, cv, int(valid.size)
+
+    @staticmethod
+    def label(img, box, text, color):
+        draw_box(img, box, color)
+        try:
+            import cv2
+            x1, y1 = int(box[0]), max(18, int(box[1]) - 6)
+            cv2.putText(img, text, (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 4, cv2.LINE_AA)
+            cv2.putText(img, text, (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
+        except ImportError:
+            pass
 
 
 def main():

@@ -28,7 +28,7 @@ from rclpy.node import Node
 from std_srvs.srv import Trigger
 
 from bottle_tracking import geometry as geo
-from bottle_tracking.common import DetectionCollector, MemoryWatcher, call_trigger
+from bottle_tracking.common import DetectionCollector, MemoryWatcher, SnapshotSaver, call_trigger
 from bottle_tracking.stretch_interface import StretchInterface, declare
 from bottle_tracking.test_logger import TestLogger
 from bottle_tracking.testers.tester_common import ask, run_tester
@@ -55,7 +55,8 @@ class T3Tester(Node):
         cb = ReentrantCallbackGroup()
         self.robot = StretchInterface(self, cb)
         self.mem = MemoryWatcher(self, cb)
-        self.det = DetectionCollector(self, self.robot, cb)
+        self.det = DetectionCollector(self, self.robot, cb, memory=self.mem)
+        self.snap = SnapshotSaver(self, cb)
         self.search_client = self.create_client(Trigger, "/head_search/search", callback_group=cb)
         self.trials = int(declare(self, "trials", 3))
         self.parts = declare(self, "part", "AB").upper()
@@ -95,7 +96,7 @@ class T3Tester(Node):
         samples = []
         while th.is_alive():
             tr = self.mem.tracker_status()
-            samples.append((self.det.sees(0.5), tr.get("angle_err_deg"), tr.get("in_range")))
+            samples.append((self.det.sees(1.0), tr.get("angle_err_deg"), tr.get("in_range")))
             time.sleep(0.1)
         th.join()
         return result["ok"], samples
@@ -144,10 +145,10 @@ class T3Tester(Node):
                 t["outcome"], t["notes"] = "ERROR", "base motion failed or timed out"
                 self.undo(kind, amount)
                 return
-            lost = not self.det.sees(0.5)
+            lost = not self.det.sees(1.0)
             t_look = time.time()
             self.mem.set_tracking(True)            # look back at the REMEMBERED spot, no searching
-            found = self.mem.wait_for(lambda: self.centered(5.0) and self.det.sees(0.5), 6.0)
+            found = self.mem.wait_for(lambda: self.centered(5.0) and self.det.sees(1.0), 6.0)
             reacq = time.time() - t_look
             time.sleep(1.0)
             after = self.mem.position()

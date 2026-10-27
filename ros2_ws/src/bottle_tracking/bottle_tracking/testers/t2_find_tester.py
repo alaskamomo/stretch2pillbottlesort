@@ -26,7 +26,7 @@ from std_srvs.srv import Trigger
 
 from bottle_tracking import geometry as geo
 from bottle_tracking.approach_planner_node import declare_approach_config
-from bottle_tracking.common import DetectionCollector, MemoryWatcher, call_trigger
+from bottle_tracking.common import DetectionCollector, MemoryWatcher, SnapshotSaver, call_trigger
 from bottle_tracking.stretch_interface import StretchInterface, declare
 from bottle_tracking.test_logger import TestLogger
 from bottle_tracking.testers.tester_common import (ask, ask_yes, declare_arm_config, distance_bucket,
@@ -51,7 +51,8 @@ class FindTester(Node):
         cb = ReentrantCallbackGroup()
         self.robot = StretchInterface(self, cb)
         self.mem = MemoryWatcher(self, cb)
-        self.det = DetectionCollector(self, self.robot, cb)
+        self.det = DetectionCollector(self, self.robot, cb, memory=self.mem)
+        self.snap = SnapshotSaver(self, cb)
         self.search_client = self.create_client(Trigger, "/head_search/search_head_only", callback_group=cb)
         self.arm = declare_arm_config(self)
         self.approach_cfg = geo.approach_config_for_arm(self.arm, declare_approach_config(self))
@@ -70,17 +71,24 @@ class FindTester(Node):
                 info = json.loads(msg)
             except ValueError:
                 info = {"error": msg}
-            m = self.det.measure(2.0) if ok else None
+            m = self.det.measure(3.0) if ok else None
 
+            name = f"T2_{self.log.session_id}_trial{i}"
             print("\n" + "=" * 60)
             if m is None:
+                age = self.det.last_seen_age()
                 print("Does NOT see the pill bottle.")
+                print(f"  detections received by this tester: {self.det.received}"
+                      + (f", last one {age:.1f} s ago" if age is not None else ""))
+                pic = self.snap.save(name, [f"T2 trial {i}: does NOT see the pill bottle"])
+                print(f"  picture: {pic}" if pic else "  (no camera picture received)")
                 print("=" * 60)
                 t["condition"] = "not_found"
                 t["outcome"] = "NOT_FOUND"
                 t["metrics"] = {"search_time_s": info.get("search_time_s")}
-                t["notes"] = "in view of the head? " + ("yes" if ask_yes(
+                t["notes"] = ("in view of the head? " + ("yes" if ask_yes(
                     "Was the bottle somewhere the head could see?", True) else "no")
+                    + (f" | picture: {pic}" if pic else ""))
                 return
 
             fx, fy, fz = m["fixed"]
@@ -96,8 +104,14 @@ class FindTester(Node):
             if m["camera_range_m"] is not None:
                 print(f"  Distance from the head camera: {m['camera_range_m']:.2f} m")
             conf = f", confidence {m['confidence']:.2f}" if m["confidence"] is not None else ""
-            print(f"  Seen {m['n']} times in 2 s, position spread {m['spread_cm']:.1f} cm{conf}")
+            print(f"  Seen {m['n']} times in 3 s, position spread {m['spread_cm']:.1f} cm{conf}")
             print(f"  Needs to move to grab it? {moves}")
+            if m.get("source") != "detections":
+                print(f"  (position from {m['source']})")
+            pic = self.snap.save(name, [f"T2 trial {i}: SEES the pill bottle",
+                                        f"{m['base_distance_m']:.2f} m away, {abs(bearing):.0f} deg {side}",
+                                        f"odom x={fx:.2f} y={fy:.2f} z={fz:.2f}"])
+            print(f"  Picture: {pic}" if pic else "  (no camera picture received)")
             print("=" * 60)
 
             t["condition"] = distance_bucket(m["base_distance_m"])
@@ -105,7 +119,7 @@ class FindTester(Node):
                             "distance_m": m["base_distance_m"], "camera_range_m": m["camera_range_m"],
                             "bearing_deg": bearing, "spread_cm": m["spread_cm"],
                             "confidence": m["confidence"], "needs_to_move": bool(plan["steps"]) or not plan["ok"]}
-            t["notes"] = moves
+            t["notes"] = moves + (f" | picture: {pic}" if pic else "")
             if not ask_yes("Is that the pill bottle (not another object)?", True):
                 t["outcome"] = "FALSE_POSITIVE"
             elif m["spread_cm"] > self.max_spread_cm:

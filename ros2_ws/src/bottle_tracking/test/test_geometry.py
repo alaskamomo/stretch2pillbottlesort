@@ -1,0 +1,96 @@
+"""Unit tests for the pure math (no ROS needed):  python3 -m pytest test/ -v"""
+
+import math
+
+import pytest
+
+from bottle_tracking import geometry as geo
+
+CFG = geo.ApproachConfig()
+
+
+def test_quat_rotate_yaw_90():
+    q = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
+    x, y, z = geo.quat_rotate(q, (1.0, 0.0, 0.0))
+    assert x == pytest.approx(0.0, abs=1e-9) and y == pytest.approx(1.0)
+
+
+def test_aim_head_points_left_when_target_left():
+    aim = geo.aim_head((0, 0, 1.2), (1, 0, 0), (1, 1, 1.2), pan=0.0, tilt=0.0)
+    assert aim["pan_cmd"] == pytest.approx(math.pi / 4)
+    assert aim["tilt_cmd"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_aim_head_looks_down_at_table():
+    aim = geo.aim_head((0, 0, 1.2), (1, 0, 0), (1, 0, 0.2), pan=0.0, tilt=0.0)
+    assert aim["tilt_cmd"] == pytest.approx(-math.pi / 4)
+
+
+def test_aim_head_wraps_to_arm_side_instead_of_hitting_limit():
+    # camera looking at pan -3.0 (behind, arm side); target slightly further around
+    pan = -3.0
+    cam_dir = (math.cos(pan), math.sin(pan), 0)
+    target_yaw = -3.3
+    target = (math.cos(target_yaw), math.sin(target_yaw), 0)
+    aim = geo.aim_head((0, 0, 0), cam_dir, target, pan=pan, tilt=0.0)
+    assert aim["in_range"]
+    assert aim["pan_cmd"] == pytest.approx(-3.3)
+
+
+def test_tracking_cancels_base_rotation():
+    """Bottle saved in odom; after the base turns 90 deg the head must turn -90 deg."""
+    bottle_odom = (1.0, 0.0, 0.8)
+    yaw = math.pi / 2                                           # base turned left 90 deg
+    # bottle in the new base frame
+    c, s = math.cos(yaw), math.sin(yaw)
+    bb = (c * bottle_odom[0] + s * bottle_odom[1], -s * bottle_odom[0] + c * bottle_odom[1], 0.8)
+    aim = geo.aim_head((0, 0, 0.8), (1, 0, 0), bb, pan=0.0, tilt=0.0)
+    assert aim["pan_cmd"] == pytest.approx(-math.pi / 2)
+
+
+def test_in_view():
+    assert geo.in_view((0, 0, 0), (1, 0, 0), (1.0, 0.1, 0), 15, 2.5)
+    assert not geo.in_view((0, 0, 0), (1, 0, 0), (0.0, 1.0, 0), 15, 2.5)
+    assert not geo.in_view((0, 0, 0), (1, 0, 0), (3.0, 0.0, 0), 15, 2.5)
+
+
+@pytest.mark.parametrize("bottle,robot", [
+    ((1.0, 0.0, 0.76), (0, 0, 0)),
+    ((2.0, 0.3, 0.76), (0, 0, 0)),
+    ((0.0, 1.5, 0.76), (0, 0, 0)),
+    ((0.0, -1.5, 0.76), (0, 0, 0)),
+    ((-1.5, 0.0, 0.76), (0, 0, 0)),
+    ((2.5, -1.5, 0.76), (0.5, 0.5, 1.0)),
+    ((0.2, 0.2, 0.76), (0, 0, 0)),         # closer than standoff: backs up
+])
+def test_plan_puts_bottle_on_arm_line(bottle, robot):
+    plan = geo.plan_approach(bottle, robot, CFG)
+    assert plan["ok"], plan["reason"]
+    assert abs(plan["predicted_align_error_m"]) <= CFG.align_tol_m
+    assert CFG.reach_min_m <= plan["predicted_reach_m"] <= CFG.reach_max_m
+    assert plan["num_rotations"] <= 2 and plan["num_drives"] <= 1
+    assert plan["predicted_table_clearance_m"] >= CFG.min_table_clearance_m - 1e-9
+
+
+def test_plan_already_beside_bottle_does_not_move():
+    plan = geo.plan_approach((0.0, -0.5, 0.76), (0, 0, 0), CFG)
+    assert plan["ok"] and plan["steps"] == []
+
+
+def test_plan_already_beside_bottle_just_slides():
+    plan = geo.plan_approach((0.3, -0.5, 0.76), (0, 0, 0), CFG)
+    assert plan["ok"] and [s["type"] for s in plan["steps"]] == ["DRIVE"]
+    assert plan["steps"][0]["m"] == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize("bottle,word", [((5.0, 0, 0.76), "max approach"), ((1.0, 0, 1.4), "lift range")])
+def test_unreachable_gives_no_plan(bottle, word):
+    plan = geo.plan_approach(bottle, (0, 0, 0), CFG)
+    assert not plan["ok"] and not plan["steps"] and word in plan["reason"]
+    assert "NO_PLAN" in geo.format_plan(plan)
+
+
+def test_deep_table_gives_no_plan():
+    cfg = geo.ApproachConfig(table_edge_to_bottle_m=0.60)
+    plan = geo.plan_approach((1.5, 0, 0.76), (0, 0, 0), cfg)
+    assert not plan["ok"] and "table clearance" in plan["reason"]

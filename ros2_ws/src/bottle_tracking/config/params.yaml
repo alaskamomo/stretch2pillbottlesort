@@ -1,0 +1,74 @@
+# Shared parameters for every bottle_tracking node and tester.
+# Pass to testers with:  --ros-args --params-file <path to this file>
+/**:
+  ros__parameters:
+    # ---- frames and topics (Stretch 2, ROS 2 Jazzy defaults) ----
+    fixed_frame: odom                     # needs stretch_driver broadcast_odom_tf:=True
+    base_frame: base_link
+    camera_frame: camera_color_optical_frame
+    detection_topic: /pill_bottle/detection
+    cmd_vel_topic: /stretch/cmd_vel
+    joint_states_topic: /stretch/joint_states
+    trajectory_action: /stretch_controller/follow_joint_trajectory
+    nav_mode_service: /switch_to_navigation_mode
+
+    # ---- base motion ----
+    max_linear_speed: 0.10                # m/s, keep slow near the table
+    min_linear_speed: 0.02
+    max_angular_speed: 0.40               # rad/s
+    min_angular_speed: 0.08
+    rotate_tolerance_deg: 1.0
+    drive_tolerance_m: 0.01
+    base_motion_timeout_s: 30.0
+
+    # ---- head ----
+    head_pan_min: -4.04
+    head_pan_max: 1.73
+    head_tilt_min: -1.53
+    head_tilt_max: 0.79
+    pan_sign: 1.0                         # flip to -1.0 if the head turns AWAY from the bottle
+    tilt_sign: 1.0
+    tracking_enabled_on_start: true
+    tracking_rate_hz: 5.0
+    tracking_deadband_deg: 2.0
+    min_goal_interval_s: 0.3
+
+    # ---- bottle memory ----
+    same_bottle_radius_m: 0.10            # closer than this = same bottle
+    smoothing_alpha: 0.3
+    moved_confirm_count: 3                # detections needed to accept a moved bottle
+    missing_timeout_s: 3.0                # looking at the saved spot this long with no bottle = MISSING
+    view_cone_deg: 15.0
+    max_detect_range_m: 2.5
+
+    # ---- head-first search ----
+    head_pan_positions: [1.4, 0.7, 0.0, -0.7, -1.4, -2.1, -2.8, -3.5]
+    head_tilt_positions: [-0.45, -0.85]
+    dwell_s: 0.8                          # must cover >= moved_confirm_count detector frames
+    look_saved_timeout_s: 3.0
+    base_step_deg: 90.0
+    max_base_rotations: 3
+    search_timeout_s: 120.0
+
+    # ---- approach planner (calibrate with: ros2 run tf2_ros tf2_echo base_link link_grasp_center) ----
+    standoff_m: 0.50
+    arm_x_offset_m: 0.0
+    reach_min_m: 0.30
+    reach_max_m: 0.80
+    max_approach_m: 3.5
+    lift_min_z: 0.05
+    lift_max_z: 1.05
+    base_half_width_m: 0.17
+    base_swept_radius_m: 0.25
+    table_edge_to_bottle_m: 0.15
+    min_table_clearance_m: 0.10
+    max_simple_drive_m: 0.50
+    max_reverse_m: 0.50
+    align_tol_m: 0.02
+    min_rotate_deg: 1.0
+    min_drive_m: 0.01
+    dry_run: false                        # true = /approach_planner/execute only prints the plan
+    correction_enabled: true
+    correction_wait_s: 2.0
+    max_correction_m: 0.15
+    max_bottle_age_s: 30.0

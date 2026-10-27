@@ -15,7 +15,7 @@
     # ---- base motion ----
     max_linear_speed: 0.10                # m/s, keep slow near the table
     min_linear_speed: 0.02
-    max_angular_speed: 0.40               # rad/s
+    max_angular_speed: 0.25               # rad/s
     min_angular_speed: 0.08
     rotate_tolerance_deg: 1.0
     drive_tolerance_m: 0.01
@@ -29,7 +29,7 @@
     pan_sign: 1.0                         # flip to -1.0 if the head turns AWAY from the bottle
     tilt_sign: 1.0
     tracking_enabled_on_start: true
-    tracking_rate_hz: 5.0
+    tracking_rate_hz: 10.0
     tracking_deadband_deg: 2.0
     min_goal_interval_s: 0.3
 

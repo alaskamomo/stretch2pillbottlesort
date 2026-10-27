@@ -50,6 +50,11 @@ class StretchInterface:
         joint_states_topic = declare(node, "joint_states_topic", "/stretch/joint_states")
         traj_action = declare(node, "trajectory_action", "/stretch_controller/follow_joint_trajectory")
         nav_srv = declare(node, "nav_mode_service", "/switch_to_navigation_mode")
+        pos_srv = declare(node, "pos_mode_service", "/switch_to_position_mode")
+        self.gripper_joint = declare(node, "gripper_joint", "joint_gripper_finger_left")
+        self.gripper_open = declare(node, "gripper_open", 0.30)
+        self.gripper_closed = declare(node, "gripper_closed", -0.30)
+        self.grasp_frame = declare(node, "grasp_frame", "link_grasp_center")
 
         self.max_lin = declare(node, "max_linear_speed", 0.10)        # m/s
         self.min_lin = declare(node, "min_linear_speed", 0.02)
@@ -78,6 +83,7 @@ class StretchInterface:
         self.traj_client = ActionClient(node, FollowJointTrajectory, traj_action,
                                         callback_group=self.cb)
         self.nav_client = node.create_client(Trigger, nav_srv, callback_group=self.cb)
+        self.pos_client = node.create_client(Trigger, pos_srv, callback_group=self.cb)
 
     # ------------------------------------------------------------------ TF
     def lookup(self, target, source, stamp=None, timeout=0.1):
@@ -156,16 +162,89 @@ class StretchInterface:
             time.sleep(0.05)
         return False
 
-    # ------------------------------------------------------------------ base
-    def switch_to_navigation_mode(self, timeout=5.0):
-        if not self.nav_client.wait_for_service(timeout_sec=timeout):
-            self.node.get_logger().error("navigation mode service not available")
+    # ------------------------------------------------------------------ arm / lift / gripper
+    def arm_state(self):
+        """(lift, wrist_extension) from joint states, or None."""
+        j = self.joints
+        if "joint_lift" not in j:
+            return None
+        if "wrist_extension" in j:
+            ext = j["wrist_extension"]
+        elif all(f"joint_arm_l{i}" in j for i in range(4)):
+            ext = sum(j[f"joint_arm_l{i}"] for i in range(4))
+        elif "joint_arm_l0" in j:
+            ext = 4 * j["joint_arm_l0"]
+        else:
+            return None
+        return j["joint_lift"], ext
+
+    def move_joints(self, targets, timeout=20.0):
+        """Send one trajectory point {joint_name: position} and WAIT until it finishes.
+        Returns (ok, message)."""
+        if not self.traj_client.wait_for_server(timeout_sec=5.0):
+            return False, "trajectory action server not available"
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory.joint_names = list(targets.keys())
+        point = JointTrajectoryPoint()
+        point.positions = [float(v) for v in targets.values()]
+        point.time_from_start = DurationMsg(sec=0, nanosec=0)
+        goal.trajectory.points = [point]
+        send = self.traj_client.send_goal_async(goal)
+        end = time.time() + timeout
+        while not send.done() and time.time() < end:
+            time.sleep(0.02)
+        if not send.done() or send.result() is None or not send.result().accepted:
+            return False, f"goal rejected: {targets}"
+        res = send.result().get_result_async()
+        while not res.done() and time.time() < end:
+            time.sleep(0.02)
+        if not res.done():
+            return False, f"timed out moving {list(targets)}"
+        r = res.result().result
+        if r.error_code != 0:
+            return False, f"error {r.error_code}: {r.error_string}"
+        return True, "ok"
+
+    def gripper(self, state, timeout=10.0):
+        value = self.gripper_open if state == "open" else self.gripper_closed
+        return self.move_joints({self.gripper_joint: value}, timeout)
+
+    def execute_arm_steps(self, steps, log=None):
+        """Run WRIST / GRIPPER / LIFT / ARM steps from geometry.plan_arm. Returns (ok, failed_step, msg)."""
+        if not self.switch_mode(self.pos_client):
+            return False, 0, "could not switch to position mode"
+        for i, s in enumerate(steps, 1):
+            if log:
+                log(f"arm step {i}: {s}")
+            if s["type"] == "WRIST":
+                ok, msg = self.move_joints({"joint_wrist_yaw": s["yaw"], "joint_wrist_pitch": s["pitch"],
+                                            "joint_wrist_roll": s["roll"]})
+            elif s["type"] == "GRIPPER":
+                ok, msg = self.gripper(s["state"])
+            elif s["type"] == "LIFT":
+                ok, msg = self.move_joints({"joint_lift": s["to"]})
+            else:
+                ok, msg = self.move_joints({"wrist_extension": s["to"]})
+            if not ok:
+                return False, i, msg
+        return True, None, "ok"
+
+    # ------------------------------------------------------------------ modes / base
+    def switch_mode(self, client, timeout=5.0):
+        if not client.wait_for_service(timeout_sec=timeout):
+            self.node.get_logger().error(f"mode service {client.srv_name} not available")
             return False
-        fut = self.nav_client.call_async(Trigger.Request())
+        fut = client.call_async(Trigger.Request())
         end = time.time() + timeout
         while not fut.done() and time.time() < end:
             time.sleep(0.02)
         return fut.done() and fut.result() is not None and fut.result().success
+
+    def switch_to_navigation_mode(self, timeout=5.0):
+        return self.switch_mode(self.nav_client, timeout)
+
+    def switch_to_position_mode(self, timeout=5.0):
+        return self.switch_mode(self.pos_client, timeout)
 
     def stop(self):
         for _ in range(3):

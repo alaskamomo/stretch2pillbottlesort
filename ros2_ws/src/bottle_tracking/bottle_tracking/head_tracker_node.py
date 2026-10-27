@@ -48,6 +48,10 @@ class HeadTrackerNode(Node):
         self.pan_sign = declare(self, "pan_sign", 1.0)
         self.tilt_sign = declare(self, "tilt_sign", 1.0)
         self.pose_timeout = declare(self, "pose_timeout_s", 2.0)
+        # Lag fix: while the base turns, aim where the bottle WILL be lead_s seconds from now
+        self.lead_s = declare(self, "tracking_lead_s", 0.4)
+        self.last_yaw = None      # (yaw, time) of the base, to estimate how fast it is turning
+        self.yaw_rate = 0.0
 
         self.target = None        # (x, y, z, frame)
         self.target_time = 0.0
@@ -68,9 +72,21 @@ class HeadTrackerNode(Node):
             self.get_logger().info(f"tracking {'enabled' if msg.data else 'disabled'}")
         self.enabled = msg.data
 
+    def update_yaw_rate(self):
+        pose = self.robot.base_pose()
+        now = time.time()
+        if pose is None:
+            return
+        if self.last_yaw is not None and now - self.last_yaw[1] > 1e-3:
+            rate = geo.wrap_angle(pose[2] - self.last_yaw[0]) / (now - self.last_yaw[1])
+            self.yaw_rate = 0.5 * self.yaw_rate + 0.5 * rate   # light smoothing
+        self.last_yaw = (pose[2], now)
+
     def step(self):
+        self.update_yaw_rate()
         status = {"enabled": self.enabled, "has_target": False, "in_range": None,
-                  "angle_err_deg": None, "pan_cmd": None, "tilt_cmd": None}
+                  "angle_err_deg": None, "pan_cmd": None, "tilt_cmd": None,
+                  "base_yaw_rate_dps": round(math.degrees(self.yaw_rate), 1)}
         fresh = self.target is not None and time.time() - self.target_time < self.pose_timeout
         if fresh:
             status["has_target"] = True
@@ -81,6 +97,13 @@ class HeadTrackerNode(Node):
             if target is not None and cam_pos is not None and head is not None:
                 aim = geo.aim_head(cam_pos, cam_dir, target, head[0], head[1],
                                    self.robot.limits, self.pan_sign, self.tilt_sign)
+                # base turning left (+rate) makes the bottle drift right in the robot's view,
+                # so lead the pan command by -rate * lead time
+                lead = -self.yaw_rate * self.lead_s if abs(self.yaw_rate) > math.radians(2) else 0.0
+                if lead:
+                    lim = self.robot.limits
+                    aim["pan_cmd"] = max(lim.pan_min, min(lim.pan_max, aim["pan_cmd"] + self.pan_sign * lead))
+                    aim["yaw_err"] += lead
                 status.update(in_range=aim["in_range"],
                               angle_err_deg=round(math.degrees(aim["angle_err"]), 2),
                               pan_cmd=round(aim["pan_cmd"], 3), tilt_cmd=round(aim["tilt_cmd"], 3))

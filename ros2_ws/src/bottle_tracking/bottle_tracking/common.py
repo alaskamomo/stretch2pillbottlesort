@@ -97,3 +97,75 @@ def call_trigger(client, timeout=120.0):
     if not fut.done() or fut.result() is None:
         return False, "service call timed out"
     return fut.result().success, fut.result().message
+
+
+class DetectionCollector:
+    """Collects raw detections from /pill_bottle/detection, converted to base_link and
+    the fixed (odom) frame as they arrive. Used by testers to measure where the bottle is."""
+
+    def __init__(self, node, robot, cb_group=None):
+        from geometry_msgs.msg import PointStamped
+        from rclpy.time import Time
+        self._Time = Time
+        self.robot = robot
+        self.samples = []          # (wall_time, base_xyz, fixed_xyz, camera_range_m, confidence)
+        self.confidence = None
+        self._lock = threading.Lock()
+        node.create_subscription(PointStamped, "/pill_bottle/detection", self._on_det, 10,
+                                 callback_group=cb_group)
+        node.create_subscription(String, "/pill_bottle/detection_info", self._on_info, 10,
+                                 callback_group=cb_group)
+
+    def _on_info(self, msg):
+        try:
+            self.confidence = json.loads(msg.data).get("confidence")
+        except ValueError:
+            pass
+
+    def _on_det(self, msg):
+        p = (msg.point.x, msg.point.y, msg.point.z)
+        stamp = self._Time.from_msg(msg.header.stamp) if msg.header.stamp.sec > 0 else None
+        base = self.robot.point_to(p, msg.header.frame_id, self.robot.base_frame, stamp)
+        fixed = self.robot.point_to(p, msg.header.frame_id, self.robot.fixed_frame, stamp)
+        if base is None or fixed is None:
+            return
+        cam = self.robot.point_to(p, msg.header.frame_id, self.robot.camera_frame, stamp)
+        rng = (cam[0] ** 2 + cam[1] ** 2 + cam[2] ** 2) ** 0.5 if cam else None
+        with self._lock:
+            self.samples.append((time.time(), base, fixed, rng, self.confidence))
+            if len(self.samples) > 2000:
+                self.samples = self.samples[-1000:]
+
+    def last_seen_age(self):
+        with self._lock:
+            return time.time() - self.samples[-1][0] if self.samples else None
+
+    def sees(self, max_age=0.5):
+        age = self.last_seen_age()
+        return age is not None and age <= max_age
+
+    def measure(self, seconds=2.0, min_samples=3):
+        """Average the detections over the next `seconds`. Returns a dict, or None if too few."""
+        t0 = time.time()
+        time.sleep(seconds)
+        with self._lock:
+            got = [s for s in self.samples if s[0] >= t0]
+        if len(got) < min_samples:
+            return None
+
+        def mean(vals):
+            return sum(vals) / len(vals)
+
+        def std3(pts, m):
+            return (sum((p[0] - m[0]) ** 2 + (p[1] - m[1]) ** 2 + (p[2] - m[2]) ** 2 for p in pts)
+                    / len(pts)) ** 0.5
+
+        base = tuple(mean([s[1][i] for s in got]) for i in range(3))
+        fixed = tuple(mean([s[2][i] for s in got]) for i in range(3))
+        rngs = [s[3] for s in got if s[3] is not None]
+        confs = [s[4] for s in got if s[4] is not None]
+        return {"n": len(got), "base": base, "fixed": fixed,
+                "spread_cm": std3([s[2] for s in got], fixed) * 100,
+                "camera_range_m": mean(rngs) if rngs else None,
+                "base_distance_m": (base[0] ** 2 + base[1] ** 2) ** 0.5,
+                "confidence": mean(confs) if confs else None}

@@ -52,15 +52,21 @@ class HeadSearchNode(Node):
 
         self.busy = False
         self.create_service(Trigger, "/head_search/search", self.on_search, callback_group=cb)
-        self.get_logger().info("head search ready: call /head_search/search")
+        self.create_service(Trigger, "/head_search/search_head_only", self.on_search_head_only,
+                            callback_group=cb)
+        self.get_logger().info("head search ready: /head_search/search (head, then base if needed), "
+                               "/head_search/search_head_only (base never moves)")
 
-    def on_search(self, _req, res):
+    def on_search_head_only(self, req, res):
+        return self.on_search(req, res, max_rot=0)
+
+    def on_search(self, _req, res, max_rot=None):
         if self.busy:
             res.success, res.message = False, json.dumps({"error": "search already running"})
             return res
         self.busy = True
         try:
-            result = self.search()
+            result = self.search(self.max_rot if max_rot is None else max_rot)
         except Exception as e:  # never leave the base moving or the service hanging
             self.robot.stop()
             result = {"found": False, "error": f"{type(e).__name__}: {e}"}
@@ -70,7 +76,7 @@ class HeadSearchNode(Node):
         res.message = json.dumps(result)
         return res
 
-    def search(self):
+    def search(self, max_rot):
         t0_wall = time.time()
         t0 = self.mem.now()
         total_rot, n_rot = 0.0, 0
@@ -98,7 +104,7 @@ class HeadSearchNode(Node):
 
         # 2) head sweep, then 3) base rotation + sweep
         self.mem.set_tracking(False)
-        for k in range(self.max_rot + 1):
+        for k in range(max_rot + 1):
             for row, tilt in enumerate(self.tilts):
                 pans = self.pans if row % 2 == 0 else list(reversed(self.pans))  # snake pattern
                 for pan in pans:
@@ -107,7 +113,7 @@ class HeadSearchNode(Node):
                     self.robot.move_head_and_wait(pan, tilt)
                     if self.mem.wait_for(found, self.dwell):
                         return result(True, "head_sweep" if k == 0 else "base_rotation")
-            if k < self.max_rot:
+            if k < max_rot:
                 self.get_logger().info(f"head sweep found nothing, rotating base "
                                        f"{math.degrees(self.base_step):.0f} deg")
                 if not self.robot.switch_to_navigation_mode():

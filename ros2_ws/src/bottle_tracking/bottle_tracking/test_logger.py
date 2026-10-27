@@ -142,9 +142,9 @@ class TestLogger:
     def trial(self, condition="", notes=""):
         """
         Times one trial and logs it when the block ends.
-        Set t["outcome"] (required) and optionally t["metrics"] / t["notes"] inside the block.
+        Set t["outcome"] (required) and optionally t["metrics"] / t["notes"] / t["condition"] inside the block.
         """
-        t = {"outcome": None, "metrics": {}, "notes": notes}
+        t = {"outcome": None, "metrics": {}, "notes": notes, "condition": condition}
         start = time.time()
         aborted = False
         try:
@@ -161,7 +161,7 @@ class TestLogger:
                 if t["outcome"] is None:
                     t["outcome"] = "ERROR"
                     t["notes"] = f"{t['notes']} | outcome never set".strip(" |")
-                self.log(t["outcome"], condition, t["metrics"], t["notes"],
+                self.log(t["outcome"], t["condition"], t["metrics"], t["notes"],
                          duration_s=time.time() - start)
 
 

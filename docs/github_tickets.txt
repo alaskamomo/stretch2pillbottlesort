@@ -1,396 +1,216 @@
-GITHUB TICKETS - STRETCH 2 PILL BOTTLE COMPONENT TESTS
+GITHUB TICKETS - STRETCH 2 PILL BOTTLE COMPONENT TESTS (updated)
 Copy the first line of each ticket into the issue title and the rest into the body.
-Suggested labels are at the end of each ticket.
-
-======================================================================
-BUG: Robot forgets where the pill bottle is after the base turns
-
-Description: When the robot rotates to search, it loses the bottle location it already found, so it has to search again. The cause is that the bottle position was kept relative to the robot/camera, which changes every time the base moves. It also spins the whole base to search even though the head camera can turn on its own.
-
-Fix: New ROS 2 package bottle_tracking. bottle_memory saves the bottle in the odom frame, which stays fixed to the room, so the position is still right after turning. head_tracker keeps the head pointed at the saved position while the base moves. head_search sweeps the head first and only rotates the base if the head can't find the bottle. approach_planner moves the base once so the arm ends up in front of the bottle. The existing detector only needs to publish its detections on /pill_bottle/detection (see detection_publisher.py).
-
-Tasks: Add the bottle_tracking package to the workspace. Launch stretch_driver with broadcast_odom_tf:=True. Publish detections from the perception code. Replace the old spin-to-search code in the state machine with calls to /head_search/search and /approach_planner/execute. Calibrate standoff_m and arm_x_offset_m. Check pan_sign and tilt_sign on the robot.
-
-Acceptance criteria: T3, T5, T12, T15a and T15b pass.
-
-Labels: bug, top cam, robot movement, search
+Scrapped for now (close these issues): T5, T7, T12, T13, T14, T15a, T15b.
 
 ======================================================================
 T0: Set up component test logging and result summary
 
-Description: Add a shared logger so every component test records the result of each trial in the same format, plus a summary script that reports success rates.
+Description: Every component test records the result of each trial in the same format, and a summary script reports success rates.
 
-Tasks: Add the testing/ folder (test_logger.py, summarize_results.py, run_manual_test.py, test_plan.py) to the repo. Results save to ~/stretch_test_results/<TEST_ID>.csv on the robot, one row per trial, with the git commit hash. Tests with an automatic tester log through TestLogger. Every other test is run with python3 testing/run_manual_test.py <TEST_ID>, which walks through each condition and trial. Decide with Sean whether result CSVs get committed or ignored.
+Tasks: testing/ folder with test_logger.py, summarize_results.py, run_manual_test.py, test_plan.py and watch_bottle.py. Results save to ~/stretch_test_results/<TEST_ID>.csv on the robot, one row per trial, with the git commit hash. T1a, T1b, T2, T3 and T6 have automatic testers. T4, T8, T9, T10 and T11 are logged with python3 testing/run_manual_test.py <TEST_ID>.
 
-Acceptance criteria: Running a tester creates or appends to its CSV. Running python3 summarize_results.py prints the success rate, outcome breakdown, per-condition rate and metric averages for every test. The --markdown output can be pasted into an issue comment.
-
-Defaults for all tests: 10 trials per condition unless stated otherwise. Ground truth is tape-measured from the robot base, with positions marked on the table in tape. Only SUCCESS counts as a pass. The other outcome codes are MISS, NOT_FOUND, NO_PLAN, COLLISION, DROP, TIMEOUT, FALSE_POSITIVE and ERROR.
+Acceptance criteria: Running a tester creates or appends to its CSV. python3 testing/summarize_results.py prints the success rate, outcome breakdown, per-condition rate and metric averages for every test. The --markdown output can be pasted into an issue comment.
 
 Labels: component testing, documentation
 
 ======================================================================
-T1a: Planning test: create and print a grasp plan from known bottle coordinates (no motion)
+T1a: Find the pill bottle with the head camera and print the plan to get it (no motion)
 
-Description: Test the planner by itself. The bottle coordinates are typed in directly, with no perception, and the robot does not move. The tester prints the full plan so we can read what the robot would do, then checks it against the criteria below. This separates bad-plan failures from bad-execution failures.
+Description: The robot looks for the pill bottle with the head (top) camera, then prints the full plan for picking it up: how the base has to move so the arm is beside the bottle, then every lift, arm and gripper step to grab the middle of the bottle. The base and arm do not move. Only the head moves while searching, and the base only turns if the head can't find the bottle.
 
-Printed plan format: The tester prints the input bottle pose, then every step in order with the joint or base command and its target value, then the predicted final gripper position and clearance. Example:
-PLAN for bottle at x=0.15 y=-0.62 z=0.76 (base_link), upright
-Step 1  STOW        lift=0.85 m  arm=0.00 m  wrist_yaw=0.00 rad  gripper=open
-Step 2  BASE_ROTATE +8.3 deg (line the arm up with the bottle)
-Step 3  BASE_MOVE   +0.15 m forward
-Step 4  LIFT        0.85 -> 0.80 m (gripper at bottle mid-height + 4 cm)
-Step 5  ARM_EXTEND  0.00 -> 0.41 m (stop 3 cm before the bottle)
-Step 6  LIFT        0.80 -> 0.76 m (gripper at bottle mid-height)
-Step 7  ARM_EXTEND  0.41 -> 0.45 m (fingers around the bottle)
-Step 8  GRIPPER     close
-Step 9  LIFT        0.76 -> 0.86 m (lift 10 cm)
-Predicted grasp point: 0.4 cm from bottle center height, min table clearance 4.0 cm
-If no plan exists, it prints NO_PLAN and the reason, for example "bottle 1.1 m away, max arm reach 0.52 m".
+Setup: Run calibrate_arm once so the arm numbers are measured, not guessed. Driver, head camera and the bottle_tracking launch (with the YOLO detector) running.
 
-Setup: Bottle pose given as x, y, z in base_link plus orientation (upright or lying down). The planner runs in dry-run mode: it builds and prints the plan, but no motion commands are sent to the robot.
+Each trial: The tester pauses so you can put the bottle somewhere (Enter skips the wait), searches, averages the detections for 2 seconds, then prints the plan. Example:
+APPROACH PLAN for bottle at x=1.15 y=0.30 z=0.80 (odom), robot at x=0.00 y=0.00 heading=0.0 deg
+Target base pose: x=0.62 y=0.16 heading=104.6 deg (bottle 0.55 m out the arm side)
+Step 1  BASE_ROTATE  +14.6 deg (face the target base pose)
+Step 2  BASE_DRIVE   +0.64 m (drive straight)
+Step 3  BASE_ROTATE  +90.0 deg (turn so the arm side faces the bottle)
+Step 4  HEAD_TRACK   keep the bottle centered during the steps above
+ARM PLAN for bottle at x=0.00 y=-0.55 z=0.80 (base_link, after the base move)
+Step 5  WRIST        yaw=0.00 pitch=0.00 roll=0.00 rad (point the gripper straight out)
+Step 6  GRIPPER      open (open before reaching)
+Step 7  LIFT         -> 0.850 m (gripper 5 cm above grasp height)
+Step 8  ARM_EXTEND   -> 0.190 m (stop 6 cm before the bottle)
+Step 9  LIFT         -> 0.800 m (gripper at the middle of the bottle)
+Step 10 ARM_EXTEND   -> 0.250 m (fingers around the bottle)
+Step 11 GRIPPER      close (grab)
+Step 12 LIFT         -> 0.900 m (lift 10 cm)
+PLAN OK
 
-Conditions: 5 reachable poses, upright (add lying down once that grasp strategy exists), and 2 unreachable poses (too far away, below table height). 10 trials each.
+Success for each trial: The bottle is found, a plan is printed, and you agree the plan is right (the tester asks). NO_PLAN counts as a success only when the bottle really can't be reached.
 
-Success for a reachable pose: A plan is returned within 5 seconds and printed. The gripper stays at least 3 cm above the table until the final approach. The final grasp point is within 1 cm of the bottle's center height, so the middle of the fingers holds the bottle. All joint targets are within their limits.
+Outcome codes: SUCCESS, MISS (plan is wrong), NOT_FOUND, NO_PLAN, ERROR.
 
-Success for an unreachable pose: The planner returns NO_PLAN with a reason, does not crash and sends no motion command.
+Metrics logged: search_time_s, distance_m, spread_cm, base_steps, total_rotation_deg, total_drive_m, predicted_table_clearance_cm, arm_extension_m, lift_m, plus the full plan in notes. Results group by distance automatically.
 
-Outcome codes: SUCCESS, NO_PLAN (a fail on a reachable pose), COLLISION (contact predicted), TIMEOUT, ERROR.
+Pass criteria: At least 95%.
 
-Metrics to log: plan_time_s, num_steps, min_table_clearance_cm, grasp_height_offset_cm, plus the full printed plan saved in notes.
+How to run: ros2 run bottle_tracking t1a_plan_tester --ros-args --params-file $P -p trials:=3
 
-Pass criteria: At least 95% success on reachable poses, and 100% correct NO_PLAN on unreachable poses.
-
-How to run: python3 testing/run_manual_test.py T1a (until the grasp planner has its own tester).
-
-Labels: component testing, planning, robot movement
+Labels: component testing, planning, perception, top cam
 
 ======================================================================
-T1b: Motion test: execute the grasp plan from known bottle coordinates
+T1b: Find the pill bottle, plan, then drive and grab it
 
-Description: Same known coordinates as T1a, but now the robot carries out the plan and picks up the bottle. Perception is skipped. The plan prints before it runs (same format as T1a), so a failed trial can be traced to a specific step.
+Description: Same as T1a, then the robot carries out the plan. It drives the base (head tracking keeps the camera on the bottle), looks at the bottle again up close, fixes any leftover misalignment with one short drive, re-plans the arm from the fresh look, then grabs the middle of the bottle, lifts it and holds it for 5 seconds. Afterward it puts the bottle back down and retracts.
 
-Setup: Bottle on a taped mark with measured coordinates, which are passed straight to the planner and then to motion.
+Each trial: Pause, search, print plan, you press Enter to drive and again to run the arm. After the hold you answer two questions: whether it hit the table or knocked the bottle, and the result (held in the middle, held by the end/cap, dropped, or missed).
 
-Conditions: 3 positions (left, center, right), upright, 10 trials each.
+Success for each trial: No collision, the middle of the fingers holds the bottle, and the bottle stays lifted for 5 seconds.
 
-Success for each trial: The arm reaches the pre-grasp pose without touching the table or knocking the bottle. The gripper closes on the middle of the bottle, not the cap or the bottom. The bottle is lifted at least 5 cm and held for 5 seconds without slipping. The whole sequence finishes within 30 seconds.
+Outcome codes: SUCCESS, MISS (grabbed air or pushed the bottle, or held by the end), NOT_FOUND, NO_PLAN, COLLISION, DROP, ERROR.
 
-Outcome codes: SUCCESS, MISS (closed on air or pushed the bottle away), COLLISION, DROP, TIMEOUT, ERROR.
-
-Metrics to log: exec_time_s, failed_step (the step number from the printed plan), grip_location (middle or end).
+Metrics logged: exec_time_s, final_off_arm_line_cm, final_reach_m, failed_step, grip_location, plus everything from T1a.
 
 Pass criteria: At least 80%. The grasp is the current blocker, so track this number as it improves.
 
-How to run: python3 testing/run_manual_test.py T1b
+How to run: ros2 run bottle_tracking t1b_execute_tester --ros-args --params-file $P -p trials:=3
 
-Labels: component testing, robot movement, gripper
+Labels: component testing, robot movement, gripper, top cam
 
 ======================================================================
-T2: Find pill bottle: detection accuracy using the camera only
+T2: Find the pill bottle with the head camera and say where it is
 
-Description: The robot starts with no known bottle location. Only the head camera pans and tilts, and the base and arm stay still. This measures how reliably the detector finds the bottle and how accurately it estimates the bottle's 3D position.
+Description: The robot looks around with the head camera only (the base never moves) and reports, without being told any coordinates: whether it sees the pill bottle, where it is in the fixed (odom) frame, how far away it is from the base and from the camera, which direction it is, and whether the robot needs to move to grab it (and how: turn, drive, turn).
 
-Conditions: The bottle is placed at distances of 0.5, 1.0 and 1.5 m, at bearings left, center and right (9 poses), upright first, then lying down and elevated. Repeat 10 times per pose.
+Each trial: The tester pauses (20 seconds by default, Enter skips) so you can move the bottle, searches with the head, averages the detections for 2 seconds, prints the report, then asks you to confirm it found the pill bottle and not another object.
 
-Success for each trial: The bottle is detected within 30 seconds of starting the head scan. The estimated 3D position is within 3 cm of the tape-measured position. The detection is the pill bottle itself, not the cap alone or a distractor object.
+Success for each trial: It finds the pill bottle (not a distractor) and the position is steady to within 2 cm.
 
-Outcome codes: SUCCESS, NOT_FOUND, MISS (found, but position error over 3 cm), FALSE_POSITIVE, TIMEOUT, ERROR.
+Outcome codes: SUCCESS, MISS (position unsteady), NOT_FOUND, FALSE_POSITIVE, ERROR.
 
-Metrics to log: detect_time_s, confidence, error_cm, est_x, est_y, est_z, head_pan, head_tilt.
+Metrics logged: search_time_s, x, y, z, distance_m, camera_range_m, bearing_deg, spread_cm, confidence, needs_to_move. Results group by distance automatically.
 
-Pass criteria: At least 90% success overall, no single pose below 70%, and a mean position error of 2 cm or less.
+Pass criteria: At least 90%.
 
-How to run: python3 testing/run_manual_test.py T2
+How to run: ros2 run bottle_tracking t2_find_tester --ros-args --params-file $P -p trials:=5
 
 Labels: component testing, perception, top cam
 
 ======================================================================
-T3: Remember and track the bottle while the base moves
+T3: Keep an eye on the pill bottle while moving, then remember where it is
 
-Description: Right now the robot forgets where the bottle is after it turns. Once the bottle is detected, its position is saved in the odom (world) frame, which does not move when the robot does. While the base rotates or drives, the head keeps pointing at the saved position by changing its pan and tilt to cancel out the base motion. If the head can't keep the bottle in view, for example because the head hits its pan limit, the robot still keeps the saved position and looks straight back at it after the motion finishes. After the motion, the robot re-detects the bottle and updates the saved position if the new detection is within 10 cm of the old one. If the bottle is more than 10 cm from where it was saved, the robot treats it as moved (see T12).
+Description: One run does Part A, then Part B.
 
-Note: This is more of an integration test than a pure component test, since it uses perception, TF, base motion and the head together.
+Part A, watch while moving: The robot finds the bottle, then moves around with head tracking on: turning 45 degrees each way, turning 90 degrees each way, driving 0.3 m forward and back, and a mix of turning and driving. Every pattern ends where it started. The camera should stay on the bottle the whole time.
 
-Part A, tracking during motion: The bottle is detected and centered in the head camera, then the base rotates by +30, -30, +90, -90 and 180 degrees (10 trials each), and also drives forward 0.3 m and backward 0.3 m (10 trials each). Success when the bottle stays in the camera view for at least 90% of the motion (when the head's pan range allows it), stays within 10 degrees of image center during the motion, and is within 5 degrees of image center within 2 seconds of the motion stopping.
+Part B, remember after moving: First the robot makes sure it sees the bottle (it searches, and turns the base if needed). Then each trial moves the base (+90, -90, 180 degrees, or 0.3 m forward) with the head frozen, so the camera loses the bottle. Afterward the head turns straight back to the remembered spot, with no searching, and should see the bottle there. The robot then undoes the move.
 
-Part B, memory without tracking: The same rotations, but head tracking is turned off, so the head is frozen during the turn. Success when, after the turn, the head points straight at the saved position within 3 seconds without re-scanning, the bottle is within 5 degrees of image center, and the saved position and the re-detected position agree within 3 cm.
+Success for each Part A trial: The bottle is seen at least 90% of the time while moving (ignoring time when the head is at its turning limit), the tracking error stays at or under 10 degrees, the camera is centered again within 2 seconds of stopping, and the remembered position drifts 3 cm or less.
 
-Outcome codes: SUCCESS, MISS (the head points at the wrong place), NOT_FOUND, TIMEOUT, ERROR.
+Success for each Part B trial: The head points back at the bottle and sees it within 3 seconds, and the remembered position drifts 3 cm or less.
 
-Metrics to log: motion_type, rotation_deg, percent_frames_in_view, max_tracking_error_deg, reacquire_time_s, position_drift_cm.
+Outcome codes: SUCCESS, MISS, NOT_FOUND, ERROR.
 
-Pass criteria: At least 90% for Part A and at least 90% for Part B. The mean position_drift_cm should stay under 3 cm. If drift grows with the size of the rotation, the odometry or TF needs tuning.
+Metrics logged: percent_time_seen, max_tracking_error_deg, mean_tracking_error_deg, settle_time_s, position_drift_cm, reacquire_time_s, lost_sight_during_move.
 
-How to run: ros2 run bottle_tracking t3_tracking_tester
+Pass criteria: At least 90% for each part.
+
+How to run: ros2 run bottle_tracking t3_tracking_tester --ros-args --params-file $P -p trials:=3
 
 Labels: integration test, perception, robot movement, top cam
 
 ======================================================================
 T4: "Nothing there" recovery when the bottle disappears
 
-Description: Checks what happens when the robot expects a bottle that isn't there anymore. The robot must not try to grab empty space, and it must go back to Detect and then Search. (T4's description was cut off in the whiteboard photo, so confirm this reading with Prof. Martinson.)
+Description: Checks what happens when the robot expects a bottle that isn't there anymore. The robot must not try to grab empty space, and it must go back to searching. (T4's description was cut off in the whiteboard photo, so confirm this reading with Prof. Martinson.)
 
-Setup: The robot detects the bottle, then a person takes the bottle away at different points in the sequence.
+Setup: The robot finds the bottle, then a person takes it away at different points: before the base drives, before the grasp, and while the arm is extending. 3 trials each.
 
-Conditions: Bottle removed after detection but before positioning, bottle removed after positioning but before the grasp, and bottle removed while the arm is extending. 10 trials each.
-
-Success for each trial: The robot reports the bottle missing and makes no grasp attempt at the empty spot. If the arm was already extending, it stops and retracts without closing the gripper. It goes back to Detect within 10 seconds and does not crash.
+Success for each trial: The robot reports the bottle missing (bottle memory status MISSING) and makes no grasp attempt at the empty spot. If the arm was already extending, it stops and retracts without closing the gripper. It goes back to searching within 10 seconds and does not crash.
 
 Outcome codes: SUCCESS, MISS (attempted to grasp empty space), TIMEOUT, ERROR.
 
-Metrics to log: removal_stage, recovery_time_s, gripper_closed (true or false), next_state.
+Pass criteria: 100%. This is a safety check.
 
-Pass criteria: 100%. This is a safety check, so a single grasp at empty space is a fail.
-
-How to run: python3 testing/run_manual_test.py T4. bottle_memory reports MISSING on /bottle_memory/state, and the approach planner stops moving when that happens.
+How to run: python3 testing/run_manual_test.py T4
 
 Labels: component testing, safety
 
 ======================================================================
-T5: Search with the head first, rotating the base only if needed
+T6: Distance to the pill bottle at different spots (base never moves)
 
-Description: The robot should not spin the whole base every time it searches. The order is: (1) Check the saved bottle position from T3, and if there is one, look there first. (2) If not, sweep the head camera through its full pan and tilt range while the base stays still. (3) Only if the head sweep finds nothing, rotate the base in steps of about 90 degrees and sweep the head again at each step. The test ends when the bottle is found and its position is saved. Moving to the bottle afterward is tested in T15a and T15b.
+Description: The robot looks for the pill bottle with the head camera only and calculates how far away it is, at several spots, without moving the base. Between spots it pauses for 60 seconds (Enter skips) so you can move the bottle.
 
-Conditions: Bottle in view of the head sweep but not straight ahead (left, right, near the edge of the pan range): 10 trials each. Bottle behind the robot, outside the head's range: 10 trials. Bottle far away but in view (2 to 3 m): 10 trials.
+Each spot: The tester searches with the head, averages the detections for 3 seconds and prints the distance from the base center (flat on the floor), the straight-line distance from the head camera, and how steady the reading was. You can type the tape-measured distance from the base center to get the error.
 
-Success for each trial: If the bottle is within the head's range, it is found with zero base rotation. If it is outside the head's range, it is found with at most one full base rotation. The bottle is found within 60 seconds, and its saved position is within 3 cm of the measured position (within 5 cm at 2 to 3 m).
+Success for each spot: The reading is steady to within 1 cm, and if you measured it, within 2 cm of the tape (3 cm beyond 1.2 m).
 
-Outcome codes: SUCCESS, NOT_FOUND, MISS (spun the base when the head alone could have found the bottle, or the position error was too large), FALSE_POSITIVE, TIMEOUT, ERROR.
+Outcome codes: SUCCESS, MISS (unsteady or error too large), NOT_FOUND, ERROR.
 
-Metrics to log: search_time_s, base_rotation_deg_during_search, num_base_rotations, error_cm.
+Metrics logged: est_m, camera_range_m, true_m, error_cm, signed_error_cm, spread_cm, n. Results group by distance automatically. A consistent signed error (for example always +2 cm) can be calibrated out with depth_offset_m.
 
-Pass criteria: At least 90% overall, and 100% zero-base-rotation searches when the bottle is within the head's range.
+Pass criteria: At least 90%.
 
-How to run: ros2 run bottle_tracking t5_search_tester
-
-Labels: component testing, search, robot movement, top cam
-
-======================================================================
-T6: Depth and distance estimation (perception only)
-
-Description: Tests only the head camera's depth reading. The camera stays still and the bottle is straight ahead at known distances.
-
-Conditions: 0.4, 0.6, 0.8, 1.0 and 1.5 m, 10 trials each.
-
-Success for each trial: A valid depth is returned (not NaN or 0), using the median depth over the bottle mask to handle holes in the depth image. The error is 2 cm or less (3 cm or less at 1.5 m).
-
-Outcome codes: SUCCESS, MISS (error too large), NOT_FOUND, ERROR.
-
-Metrics to log: true_m, est_m, error_cm, signed_error_cm, valid_pixel_ratio.
-
-Pass criteria: At least 90% at every distance. Also report the mean signed error, because a constant bias (for example, always 2 cm too far) can be calibrated out.
-
-How to run: python3 testing/run_manual_test.py T6
-
-Labels: component testing, perception, top cam
-
-======================================================================
-T7: Camera to base transform (TF) accuracy
-
-Description: Checks that a point seen by the head camera ends up in the right place in base_link at any head angle. If T2 fails but T6 passes, the problem is probably here.
-
-Setup: The bottle sits on a taped, measured spot and stays still while the head moves to different pan and tilt angles.
-
-Conditions: 5 head poses (center, pan left, pan right, tilt down, tilt down plus pan), 10 trials each.
-
-Success for each trial: The transformed bottle position is within 2 cm of the tape-measured position.
-
-Outcome codes: SUCCESS, MISS, NOT_FOUND, ERROR.
-
-Metrics to log: head_pan, head_tilt, error_cm, error_x, error_y, error_z.
-
-Pass criteria: At least 90%, and the error should not grow with the pan or tilt angle. If it does, the URDF or the camera calibration needs fixing.
-
-How to run: python3 testing/run_manual_test.py T7
+How to run: ros2 run bottle_tracking t6_distance_tester --ros-args --params-file $P -p trials:=5
 
 Labels: component testing, perception, top cam
 
 ======================================================================
 T8: Grasp only (gripper tested apart from perception and planning)
 
-Description: The gripper is placed around the bottle directly, either by a script or by hand, and only close, lift and hold are tested. If T1b fails but T8 passes, the problem is positioning, not the gripper.
+Description: The gripper is placed around the bottle directly, by a script or by hand, and only close, lift and hold are tested. If T1b fails but T8 passes, the problem is positioning, not the gripper.
 
-Conditions: Upright bottle. Try 2 to 3 gripper effort or closing settings, and grasp heights at the middle of the bottle and near the cap. 10 trials per setting.
+Conditions: Upright bottle. Try 2 to 3 gripper closing values, and grasp heights at the middle of the bottle and near the cap. 5 trials per setting.
 
 Success for each trial: The middle of the fingers contacts the bottle. The bottle is lifted at least 5 cm and held for 5 seconds with no visible slip, and it is not crushed.
 
 Outcome codes: SUCCESS, MISS, DROP, ERROR.
 
-Metrics to log: gripper_effort, grip_width, grasp_height_cm, slipped.
-
-Pass criteria: At least 90% for at least one setting. Use that setting in T1b.
+Pass criteria: At least 90% for at least one setting. Put that value in gripper_closed in params.yaml.
 
 How to run: python3 testing/run_manual_test.py T8
 
 Labels: component testing, gripper
 
 ======================================================================
-T9: Bottle orientation classification
+T9: Bottle orientation classification (reduced)
 
-Description: Checks that the robot can tell an upright bottle from one that is knocked over or elevated, since each needs a different grasp.
+Description: Checks that the robot can tell an upright bottle from one that is knocked over.
 
-Conditions: Upright, lying down and elevated (on a box), at 3 positions, 10 trials per orientation. Log the true orientation as the condition.
+Conditions: Upright and lying down, 5 trials each. Log the true orientation as the condition.
 
 Success for each trial: The predicted orientation matches the true orientation.
 
-Outcome codes: SUCCESS, MISS (wrong class), NOT_FOUND, ERROR.
+Outcome codes: SUCCESS, MISS, NOT_FOUND, ERROR.
 
-Metrics to log: predicted_orientation, confidence.
-
-Pass criteria: At least 90% for each orientation.
+Pass criteria: At least 90%.
 
 How to run: python3 testing/run_manual_test.py T9
 
 Labels: component testing, perception, training issue
 
 ======================================================================
-T10: In-hand verification at the head camera
+T10: In-hand verification at the head camera (reduced)
 
 Description: After a grasp, the robot lifts the bottle up to the head camera and confirms it is holding the pill bottle.
 
-Part A: Bottle in the gripper, 10 trials. Success when the detector confirms pill_bottle in the gripper within 5 seconds.
+Conditions: Bottle in the gripper, 5 trials. Empty gripper, 5 trials.
 
-Part B: Empty gripper (a missed grasp), 10 trials. Success when the verification correctly fails and never reports "got it".
+Success for each trial: With the bottle, the detector confirms pill_bottle within 5 seconds. With an empty gripper, the verification correctly fails.
 
-Outcome codes: SUCCESS, MISS, FALSE_POSITIVE (reports the bottle when the gripper is empty), TIMEOUT, ERROR.
+Outcome codes: SUCCESS, MISS, FALSE_POSITIVE, TIMEOUT, ERROR.
 
-Metrics to log: verify_time_s, confidence, label_visible.
-
-Pass criteria: At least 90% for Part A and 100% for Part B.
+Pass criteria: At least 90% with the bottle, 100% with the empty gripper.
 
 How to run: python3 testing/run_manual_test.py T10
 
 Labels: component testing, perception, safety, top cam
 
 ======================================================================
-T11: Retry and failure handling
+T11: Retry and failure handling (reduced)
 
-Description: Forces grasp failures and checks the retry logic. This is done on the robot by taking the bottle away during the grasp, or by adding a test flag that makes the grasp check report a failure on purpose.
+Description: Forces grasp failures by taking the bottle away during the grasp, and checks the retry logic.
 
-Conditions: Fail once and then succeed, 5 trials. Fail every time, 5 trials.
+Conditions: Fail once and then succeed, 3 trials. Fail every time, 3 trials.
 
-Success for each trial: The robot re-detects the bottle before each retry and retries at most 3 more times (4 attempts total). After the last failure, it reports the failure, stows the arm and stops, with no endless loop.
+Success for each trial: The robot re-detects the bottle before each retry and retries at most 3 more times (4 attempts total). After the last failure, it reports the failure, stows the arm and stops.
 
-Outcome codes: SUCCESS, MISS (wrong number of retries or no re-detection), TIMEOUT, ERROR.
-
-Metrics to log: attempts, retry_reason, final_state.
+Outcome codes: SUCCESS, MISS, TIMEOUT, ERROR.
 
 Pass criteria: 100%.
 
 How to run: python3 testing/run_manual_test.py T11
 
 Labels: component testing, safety
-
-======================================================================
-T12: Bottle moved while the robot is paused (re-search test)
-
-Description: The robot finds the bottle and saves its position, then pauses. While it is paused, a person moves the bottle somewhere else. When the robot resumes, it should first look at the saved position, see that the bottle is gone or more than 10 cm from where it was, drop the old saved position, and run the T5 search (head first, base only if needed) to find the bottle in its new spot. It must not reach for the old position.
-
-Setup: The tester pauses after detection (tracking off, head looks away), waits for you to move the bottle and type its new measured position, then resumes. Mark the new position with tape and measure it.
-
-Conditions: Moved a small distance (5 to 15 cm on the table), moved across the table (still in the head's view), moved out of the head's view (behind or beside the robot), and not moved at all (control). 10 trials each.
-
-Success for each trial: The robot does not move the arm toward the old position. It detects that the bottle moved within 5 seconds of resuming. It finds the bottle in its new position within 60 seconds, with the estimated position within 3 cm of the measured one. For the not-moved control, it keeps the saved position and does not search again. For the out-of-view case, it searches with the head first and rotates the base only after the head sweep fails.
-
-Outcome codes: SUCCESS, MISS (reached for the old position, or searched again when the bottle hadn't moved), NOT_FOUND, FALSE_POSITIVE, TIMEOUT, ERROR.
-
-Metrics to log: move_distance_cm, moved_detected (true or false), time_to_notice_s, search_time_s, base_rotation_deg, error_cm.
-
-Pass criteria: At least 90%, and 100% with no arm motion toward the old position.
-
-How to run: ros2 run bottle_tracking t12_moved_bottle_tester
-
-Labels: integration test, search, top cam
-
-======================================================================
-T13: End-to-end full run
-
-Description: The full demo: detect, search if needed, approach so the arm is in front of the bottle, plan the grasp, grasp, verify at the head camera and place the bottle back. Run this only after the component tests pass.
-
-Conditions: 3 bottle positions, upright, 10 trials each. Add other orientations later.
-
-Success for each trial: The whole sequence finishes with no human help. The bottle is placed back upright within 5 cm of its original spot, and the run takes 3 minutes or less.
-
-Outcome codes: SUCCESS, NOT_FOUND, NO_PLAN, COLLISION, MISS, DROP, TIMEOUT, ERROR.
-
-Metrics to log: total_time_s, failed_stage (detect, search, approach, plan, grasp, verify or place), attempts.
-
-Pass criteria: At least 70% for the demo. Use failed_stage to find which component test needs work.
-
-How to run: python3 testing/run_manual_test.py T13
-
-Labels: integration test, overall issue
-
-======================================================================
-T14: False positive check with an empty scene and distractor objects
-
-Description: Checks that the detector does not report a pill bottle when there isn't one. A false positive would make the robot try to grab the wrong object or empty space, so this runs as its own detection-only test. The base and arm stay still and only the head camera scans.
-
-Conditions: An empty table, 20 runs. Distractor objects with no pill bottle present (a water bottle, a cup, a phone, a medicine box or other similarly sized object), 10 runs per object. A pill bottle together with distractors, 10 runs, to check that the robot picks the right object when both are present.
-
-Success for each trial: With no pill bottle present, there is no pill_bottle detection above the confidence threshold for the whole head sweep. With the pill bottle and distractors together, the detection lands on the pill bottle, within 3 cm of its measured position, and not on a distractor.
-
-Outcome codes: SUCCESS, FALSE_POSITIVE (reported a bottle that isn't there, or picked a distractor), NOT_FOUND (missed the real bottle in the mixed scene), TIMEOUT, ERROR.
-
-Metrics to log: scene_type, distractor_object, max_false_confidence, detected_class, error_cm.
-
-Pass criteria: A false positive rate of 5% or less on empty and distractor scenes, and at least 90% correct picks in the mixed scene. If a particular distractor keeps causing false positives, add images of it to the YOLO training set as negative examples, or raise the confidence threshold.
-
-How to run: python3 testing/run_manual_test.py T14 (run the empty_table condition with --trials 20)
-
-Labels: component testing, perception, training issue
-
-======================================================================
-T15a: Approach planning test: plan the base motion to a far-away bottle (no motion)
-
-Description: Test the approach planner by itself. The bottle's position is typed in directly (no perception), and the robot does not move. The planner works out where the base needs to end up so the arm is lined up with the bottle and the bottle is within arm reach, then prints every base motion needed to get there. The Stretch arm extends out the side of the base, so the final pose has the bottle beside the robot, not in front of it. This test checks the plan only. T15b checks driving it.
-
-Printed plan format: The tester prints the bottle's position, the target base pose, every step in order, and the predicted final alignment. Example:
-APPROACH PLAN for bottle at x=1.40 y=0.35 z=0.76 (odom), robot at x=0.00 y=0.00 heading=0.0 deg
-Target base pose: x=0.91 y=0.23 heading=104.0 deg (bottle 0.50 m out the arm side)
-Step 1  BASE_ROTATE  +14.0 deg (face the target base pose)
-Step 2  BASE_DRIVE   +0.94 m (drive straight)
-Step 3  BASE_ROTATE  +90.0 deg (turn so the arm side faces the bottle)
-Step 4  HEAD_TRACK   keep the bottle centered during the steps above
-Predicted final alignment: bottle 0.50 m from base along the arm line, 0.0 cm off the arm line, 10 cm table clearance
-If no plan exists, it prints NO_PLAN and the reason, for example "bottle 4.20 m away, max approach distance 3.50 m" or "bottle height 1.35 m outside lift range 0.05-1.05 m".
-
-Setup: The bottle position is given in the odom frame, with the robot at x=0, y=0, heading 0. The planner runs in dry-run mode: it builds and prints the plan, but no base commands are sent to the robot. No robot is needed for this test.
-
-Conditions: Bottle ahead of the robot at 1.0, 2.0 and 3.0 m. Bottle to the left and to the right at 1.5 m. Bottle behind the robot at 1.5 m. Bottle already within reach (no motion needed). 10 trials each, with about 1 cm of noise added to the bottle position each trial. Plus 2 cases that should fail: the bottle is too far away (beyond the max approach distance), and the bottle is above the lift range.
-
-Success for a reachable bottle: A plan is returned within 2 seconds and printed. The predicted final pose puts the bottle within the arm's reach and within 2 cm of the arm's line of extension. The predicted clearance between the base and the table edge is at least 10 cm. The plan uses at most 2 rotations and 1 straight drive (no extra spinning). If the bottle is already within reach, the plan has no drive step.
-
-Success for an unreachable bottle: The planner returns NO_PLAN with a reason, does not crash and sends no motion command.
-
-Outcome codes: SUCCESS, NO_PLAN (a fail on a reachable bottle), MISS (the predicted final pose is not lined up or is out of reach), COLLISION (the predicted clearance is under 10 cm), TIMEOUT, ERROR.
-
-Metrics to log: plan_time_s, start_distance_m, total_rotation_deg, total_drive_m, num_steps, predicted_align_error_cm, predicted_table_clearance_cm, plus the full printed plan saved in notes.
-
-Pass criteria: At least 95% on reachable bottles, and 100% correct NO_PLAN on unreachable bottles.
-
-How to run: ros2 run bottle_tracking t15a_approach_plan_tester
-
-Labels: component testing, planning, robot movement, search
-
-======================================================================
-T15b: Approach motion test: drive the base to the bottle using the approach plan
-
-Description: Same kind of known bottle positions as T15a, but now the robot drives the plan. The plan is made from the tape-measured position, not perception. The plan prints before it runs (same format as T15a), so a failed trial can be traced to a specific step. While the base moves, the head keeps tracking the bottle (T3).
-
-Setup: The robot starts on a taped start mark and the bottle is on a taped mark with a measured position. That position goes straight to the approach planner, then the base executes the plan.
-
-Conditions: Bottle ahead at 1.0, 2.0 and 3.0 m. Bottle to the left and to the right at 1.5 m. Bottle behind at 1.5 m. 10 trials each.
-
-Success for each trial: The base finishes every step without touching the table or knocking the bottle. At the end, the bottle is within arm reach and within 3 cm of the arm's line of extension (measured with a tape measure). The base heading is within 3 degrees of the planned final heading. The base stops at least 10 cm from the table edge. The bottle stayed in the camera view for at least 90% of the motion. The whole approach takes 45 seconds or less. The robot ends in a pose where T1b can start.
-
-Outcome codes: SUCCESS, MISS (stopped out of reach or not lined up), COLLISION, TIMEOUT, ERROR.
-
-Metrics to log: exec_time_s, start_distance_m, final_align_error_cm, final_heading_error_deg, final_reach_m, table_clearance_cm, percent_frames_in_view, failed_step (the step number from the printed plan).
-
-Pass criteria: At least 90% overall. If the alignment error grows with distance, the problem is odometry drift. The approach_planner node fixes this with one small forward/back correction after a fresh detection once the robot is close.
-
-How to run: ros2 run bottle_tracking t15b_approach_motion_tester --ros-args --params-file <workspace>/src/bottle_tracking/config/params.yaml
-
-Labels: component testing, robot movement, top cam, search

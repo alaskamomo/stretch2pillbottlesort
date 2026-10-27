@@ -11,11 +11,12 @@
     joint_states_topic: /stretch/joint_states
     trajectory_action: /stretch_controller/follow_joint_trajectory
     nav_mode_service: /switch_to_navigation_mode
+    pos_mode_service: /switch_to_position_mode
 
     # ---- base motion ----
     max_linear_speed: 0.10                # m/s, keep slow near the table
     min_linear_speed: 0.02
-    max_angular_speed: 0.25               # rad/s
+    max_angular_speed: 0.25               # rad/s (slower turns = less head lag)
     min_angular_speed: 0.08
     rotate_tolerance_deg: 1.0
     drive_tolerance_m: 0.01
@@ -31,7 +32,38 @@
     tracking_enabled_on_start: true
     tracking_rate_hz: 10.0
     tracking_deadband_deg: 2.0
-    min_goal_interval_s: 0.3
+    min_goal_interval_s: 0.15
+    tracking_lead_s: 0.4                  # aim ahead of the turn by this much time (fixes lag)
+
+    # ---- YOLO detector (head camera) ----
+    model_path: ""                        # or pass model_path:=... to the launch file
+    class_name: pill_bottle
+    conf_threshold: 0.5
+    rotate_image: cw                      # cw if you trained on upright images, none if on raw sideways ones
+    max_rate_hz: 5.0
+    depth_scale: 0.001
+    depth_offset_m: 0.02                  # bottle front surface -> center
+    publish_debug_image: true
+    color_topic: /camera/color/image_raw
+    depth_topic: /camera/aligned_depth_to_color/image_raw
+    camera_info_topic: /camera/color/camera_info
+
+    # ---- arm + gripper (run: ros2 run bottle_tracking calibrate_arm --ros-args -p write:=true) ----
+    grasp_frame: link_grasp_center
+    grasp_lateral_offset_m: 0.30          # measured by calibrate_arm
+    lift_grasp_z_offset_m: 0.0            # measured by calibrate_arm
+    arm_x_offset_m: 0.0                   # measured by calibrate_arm
+    ext_max_m: 0.50
+    lift_min_m: 0.05
+    lift_max_m: 1.08
+    approach_height_m: 0.05
+    pregrasp_gap_m: 0.06
+    lift_after_grasp_m: 0.10
+    preferred_extension_m: 0.25
+    arm_line_tol_m: 0.03
+    gripper_joint: joint_gripper_finger_left
+    gripper_open: 0.30                    # copy the open/close values your pick code uses
+    gripper_closed: -0.30
 
     # ---- bottle memory ----
     same_bottle_radius_m: 0.10            # closer than this = same bottle
@@ -50,9 +82,8 @@
     max_base_rotations: 3
     search_timeout_s: 120.0
 
-    # ---- approach planner (calibrate with: ros2 run tf2_ros tf2_echo base_link link_grasp_center) ----
+    # ---- approach planner (standoff/reach are set from the arm numbers above) ----
     standoff_m: 0.50
-    arm_x_offset_m: 0.0
     reach_min_m: 0.30
     reach_max_m: 0.80
     max_approach_m: 3.5

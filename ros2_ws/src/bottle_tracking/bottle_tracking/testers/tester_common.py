@@ -71,3 +71,43 @@ def base_to_fixed(point_base, base_pose):
     return (x + c * point_base[0] - s * point_base[1],
             y + s * point_base[0] + c * point_base[1],
             point_base[2])
+
+
+def pause(seconds, message="Move the pill bottle to a new spot."):
+    """Count down so you can move the bottle. Press Enter to skip the rest of the wait."""
+    import select
+    import sys
+    import time
+    print(f"\n{message}  Starting in {int(seconds)} s (press Enter to start now)", flush=True)
+    end = time.time() + seconds
+    last_shown = None
+    while True:
+        left = int(round(end - time.time()))
+        if left <= 0:
+            break
+        if left != last_shown and (left % 10 == 0 or left <= 5):
+            print(f"  {left} s...", flush=True)
+            last_shown = left
+        ready, _, _ = select.select([sys.stdin], [], [], 0.25)
+        if ready:
+            sys.stdin.readline()
+            break
+    print("  go", flush=True)
+
+
+def distance_bucket(d):
+    """Condition label from a distance in meters, so results group by range automatically."""
+    if d is None:
+        return "not_found"
+    for hi, label in [(0.6, "under_0.6m"), (1.0, "0.6_to_1.0m"), (1.5, "1.0_to_1.5m"), (2.0, "1.5_to_2.0m")]:
+        if d < hi:
+            return label
+    return "over_2.0m"
+
+
+def declare_arm_config(node):
+    from dataclasses import asdict
+    from bottle_tracking import geometry as geo
+    from bottle_tracking.stretch_interface import declare
+    values = {k: declare(node, k, v) for k, v in asdict(geo.ArmConfig()).items()}
+    return geo.arm_config_from_dict(values)

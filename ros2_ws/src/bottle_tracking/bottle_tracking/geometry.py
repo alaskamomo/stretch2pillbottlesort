@@ -325,3 +325,137 @@ def config_from_dict(d):
     """Build an ApproachConfig from a dict (e.g. ROS params), ignoring unknown keys."""
     valid = asdict(ApproachConfig()).keys()
     return ApproachConfig(**{k: float(v) for k, v in d.items() if k in valid})
+
+
+# ----------------------------------------------------------------------------
+# Arm planning (lift + telescoping arm + gripper), after the base is in place
+# ----------------------------------------------------------------------------
+
+@dataclass
+class ArmConfig:
+    # Measured by `ros2 run bottle_tracking calibrate_arm` (wrist straight out):
+    grasp_lateral_offset_m: float = 0.30   # gripper center distance out the arm side (-y) at wrist_extension = 0
+    lift_grasp_z_offset_m: float = 0.0     # gripper center height minus joint_lift
+    arm_x_offset_m: float = 0.0            # gripper center x in base_link (the arm line)
+    # Robot limits
+    ext_max_m: float = 0.50
+    lift_min_m: float = 0.05
+    lift_max_m: float = 1.08
+    # Grasp motion settings
+    approach_height_m: float = 0.05        # come in this far above the grasp height
+    pregrasp_gap_m: float = 0.06           # stop this far short before lowering
+    lift_after_grasp_m: float = 0.10
+    preferred_extension_m: float = 0.25    # the approach planner parks the base so the arm needs about this much
+    arm_line_tol_m: float = 0.03           # bottle must be this close to the arm line or the base has to move
+
+
+def approach_config_for_arm(arm, base_cfg=None):
+    """Approach settings that match the measured arm, so 'in reach' means the arm can really get there."""
+    cfg = base_cfg or ApproachConfig()
+    cfg.arm_x_offset_m = arm.arm_x_offset_m
+    cfg.reach_min_m = arm.grasp_lateral_offset_m + arm.pregrasp_gap_m
+    cfg.reach_max_m = arm.grasp_lateral_offset_m + arm.ext_max_m
+    cfg.standoff_m = arm.grasp_lateral_offset_m + arm.preferred_extension_m
+    cfg.align_tol_m = min(cfg.align_tol_m, arm.arm_line_tol_m)
+    return cfg
+
+
+def plan_arm(bottle_base, arm=None):
+    """
+    Lift/arm/gripper steps to grab a bottle at bottle_base = (x, y, z) in base_link,
+    assuming the base is already in place. Grabs the middle of the bottle (detection
+    center height) with the wrist pointing straight out. Never moves anything.
+    """
+    arm = arm or ArmConfig()
+    bx, by, bz = bottle_base
+    lateral = -by
+    plan = {"ok": False, "reason": "", "steps": [], "bottle_base": (bx, by, bz)}
+
+    off_line = bx - arm.arm_x_offset_m
+    ext = lateral - arm.grasp_lateral_offset_m
+    ext_pre = ext - arm.pregrasp_gap_m
+    lift_grasp = bz - arm.lift_grasp_z_offset_m
+    lift_high = lift_grasp + arm.approach_height_m
+    lift_up = lift_grasp + arm.lift_after_grasp_m
+    plan.update(extension_m=ext, lift_grasp_m=lift_grasp, off_arm_line_m=off_line)
+
+    if lateral <= 0:
+        plan["reason"] = "bottle is on the left side of the base; the arm only reaches to the right"
+        return plan
+    if abs(off_line) > arm.arm_line_tol_m:
+        where = "ahead of" if off_line > 0 else "behind"
+        plan["reason"] = f"bottle is {abs(off_line) * 100:.1f} cm {where} the arm line; the base has to move first"
+        return plan
+    if ext_pre < 0:
+        plan["reason"] = f"bottle too close: needs {ext * 100:.1f} cm extension, minimum {arm.pregrasp_gap_m * 100:.0f} cm"
+        return plan
+    if ext > arm.ext_max_m:
+        plan["reason"] = f"bottle too far: needs {ext:.2f} m extension, max {arm.ext_max_m:.2f} m"
+        return plan
+    if not (arm.lift_min_m <= lift_grasp and lift_up <= arm.lift_max_m):
+        plan["reason"] = f"needs lift {lift_grasp:.2f} m, range {arm.lift_min_m:.2f}-{arm.lift_max_m:.2f} m"
+        return plan
+
+    plan["steps"] = [
+        {"type": "WRIST", "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "why": "point the gripper straight out"},
+        {"type": "GRIPPER", "state": "open", "why": "open before reaching"},
+        {"type": "LIFT", "to": lift_high, "why": f"gripper {arm.approach_height_m * 100:.0f} cm above grasp height"},
+        {"type": "ARM", "to": ext_pre, "why": f"stop {arm.pregrasp_gap_m * 100:.0f} cm before the bottle"},
+        {"type": "LIFT", "to": lift_grasp, "why": "gripper at the middle of the bottle"},
+        {"type": "ARM", "to": ext, "why": "fingers around the bottle"},
+        {"type": "GRIPPER", "state": "close", "why": "grab"},
+        {"type": "LIFT", "to": lift_up, "why": f"lift {arm.lift_after_grasp_m * 100:.0f} cm"},
+    ]
+    plan["ok"] = True
+    return plan
+
+
+def format_arm_plan(plan, start_number=1):
+    bx, by, bz = plan["bottle_base"]
+    lines = [f"ARM PLAN for bottle at x={bx:.2f} y={by:.2f} z={bz:.2f} (base_link, after the base move)"]
+    if not plan["ok"]:
+        lines.append(f"NO_PLAN: {plan['reason']}")
+        return "\n".join(lines)
+    for i, s in enumerate(plan["steps"], start_number):
+        if s["type"] == "WRIST":
+            txt = f"WRIST        yaw={s['yaw']:.2f} pitch={s['pitch']:.2f} roll={s['roll']:.2f} rad"
+        elif s["type"] == "GRIPPER":
+            txt = f"GRIPPER      {s['state']}"
+        elif s["type"] == "LIFT":
+            txt = f"LIFT         -> {s['to']:.3f} m"
+        else:
+            txt = f"ARM_EXTEND   -> {s['to']:.3f} m"
+        lines.append(f"Step {i}  {txt} ({s['why']})")
+    lines.append(f"Grasp point: {abs(plan['off_arm_line_m']) * 100:.1f} cm off the arm line, "
+                 f"arm extension {plan['extension_m']:.2f} m, lift {plan['lift_grasp_m']:.2f} m")
+    return "\n".join(lines)
+
+
+def full_pick_plan(bottle_fixed, robot_pose, arm, approach_cfg=None):
+    """Base approach + arm plan together. Arm plan uses where the bottle is predicted to be after the base move."""
+    cfg = approach_config_for_arm(arm, approach_cfg)
+    base = plan_approach(bottle_fixed, robot_pose, cfg)
+    out = {"base": base, "arm": None, "ok": False}
+    if not base["ok"]:
+        out["reason"] = base["reason"]
+        return out
+    fx, fy = bottle_in_base(bottle_fixed[:2], base["final_pose"])
+    out["arm"] = plan_arm((fx, fy, bottle_fixed[2]), arm)
+    out["ok"] = out["arm"]["ok"]
+    out["reason"] = out["arm"]["reason"]
+    return out
+
+
+def format_full_plan(full, frame="odom"):
+    text = format_plan(full["base"], frame)
+    if full["arm"] is not None:
+        n = len(full["base"]["steps"])
+        start = n + 2 if n else 1   # after the base steps and the HEAD_TRACK line
+        text += "\n" + format_arm_plan(full["arm"], start)
+    verdict = "PLAN OK" if full["ok"] else f"NO_PLAN: {full['reason']}"
+    return text + "\n" + verdict
+
+
+def arm_config_from_dict(d):
+    valid = asdict(ArmConfig()).keys()
+    return ArmConfig(**{k: float(v) for k, v in d.items() if k in valid})

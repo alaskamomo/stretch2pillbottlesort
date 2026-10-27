@@ -45,7 +45,9 @@ class ApproachPlannerNode(Node):
         cb = ReentrantCallbackGroup()
         self.robot = StretchInterface(self, cb)
         self.mem = MemoryWatcher(self, cb)
-        self.cfg = declare_approach_config(self)
+        from bottle_tracking.testers.tester_common import declare_arm_config
+        # standoff / reach / arm line come from the measured arm (calibrate_arm)
+        self.cfg = geo.approach_config_for_arm(declare_arm_config(self), declare_approach_config(self))
         self.dry_run = declare(self, "dry_run", False)
         self.correct = declare(self, "correction_enabled", True)
         self.correction_wait = declare(self, "correction_wait_s", 2.0)

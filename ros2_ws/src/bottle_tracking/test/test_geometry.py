@@ -94,3 +94,39 @@ def test_deep_table_gives_no_plan():
     cfg = geo.ApproachConfig(table_edge_to_bottle_m=0.60)
     plan = geo.plan_approach((1.5, 0, 0.76), (0, 0, 0), cfg)
     assert not plan["ok"] and "table clearance" in plan["reason"]
+
+
+ARM = geo.ArmConfig(grasp_lateral_offset_m=0.30, lift_grasp_z_offset_m=-0.05, arm_x_offset_m=0.02)
+
+
+def test_arm_plan_reaches_bottle_middle():
+    plan = geo.plan_arm((0.02, -0.55, 0.80), ARM)
+    assert plan["ok"], plan["reason"]
+    assert plan["extension_m"] == pytest.approx(0.25)
+    assert plan["lift_grasp_m"] == pytest.approx(0.85)          # z - offset
+    types = [s["type"] for s in plan["steps"]]
+    assert types == ["WRIST", "GRIPPER", "LIFT", "ARM", "LIFT", "ARM", "GRIPPER", "LIFT"]
+    ext_steps = [s["to"] for s in plan["steps"] if s["type"] == "ARM"]
+    assert ext_steps[0] < ext_steps[1]                           # stops short, then goes in
+
+
+@pytest.mark.parametrize("bottle,word", [
+    ((0.10, -0.55, 0.8), "ahead of"),
+    ((0.02, -1.00, 0.8), "too far"),
+    ((0.02, -0.32, 0.8), "too close"),
+    ((0.02, 0.50, 0.8), "left side"),
+    ((0.02, -0.55, 1.50), "lift"),
+])
+def test_arm_plan_rejects(bottle, word):
+    plan = geo.plan_arm(bottle, ARM)
+    assert not plan["ok"] and word in plan["reason"]
+
+
+@pytest.mark.parametrize("bottle,robot", [
+    ((2.0, 0.0, 0.8), (0, 0, 0)), ((1.0, 1.0, 0.8), (0, 0, 0)), ((-1.5, 0.3, 0.8), (0.2, -0.1, 0.5)),
+])
+def test_full_pick_plan_base_then_arm(bottle, robot):
+    full = geo.full_pick_plan(bottle, robot, ARM)
+    assert full["ok"], full["reason"]
+    assert full["arm"]["extension_m"] == pytest.approx(ARM.preferred_extension_m, abs=0.02)
+    assert "PLAN OK" in geo.format_full_plan(full)

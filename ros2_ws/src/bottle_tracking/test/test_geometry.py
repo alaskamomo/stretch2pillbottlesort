@@ -130,3 +130,15 @@ def test_full_pick_plan_base_then_arm(bottle, robot):
     assert full["ok"], full["reason"]
     assert full["arm"]["extension_m"] == pytest.approx(ARM.preferred_extension_m, abs=0.02)
     assert "PLAN OK" in geo.format_full_plan(full)
+
+
+def test_plan_does_not_park_at_the_edge_of_reach():
+    """Real case from the robot: bottle 0.79 m out the arm side needed 0.49 of 0.50 m extension.
+    The planner must move the base so the arm has room to spare instead."""
+    arm = geo.ArmConfig()
+    full = geo.full_pick_plan((0.48, -0.79, 0.80), (0.0, 0.0, 0.0), arm)
+    assert full["ok"], full["reason"]
+    assert full["arm"]["extension_m"] <= arm.ext_max_m - arm.reach_margin_m + 1e-9
+    # still valid if the fresh look after driving is 2 cm farther
+    fx, fy, fz = full["arm"]["bottle_base"]
+    assert geo.plan_arm((fx, fy - 0.02, fz), arm)["ok"]

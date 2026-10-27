@@ -62,6 +62,7 @@
     lift_after_grasp_m: 0.10
     preferred_extension_m: 0.25
     arm_line_tol_m: 0.03
+    reach_margin_m: 0.08                  # keep the arm's last 8 cm spare when parking the base
     gripper_joint: joint_gripper_finger_left
     gripper_open: 0.30                    # copy the open/close values your pick code uses
     gripper_closed: -0.30

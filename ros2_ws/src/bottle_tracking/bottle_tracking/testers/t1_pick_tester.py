@@ -13,8 +13,13 @@ Each trial:
   2. The head looks for the bottle. The base does NOT turn to search.
   3. Prints PLAN and the full plan (base moves, then lift / arm / gripper steps),
      or NO PLAN, why, and what would make a new plan possible.
-  T1b: drives the base, looks again up close, re-plans the arm, grabs, lifts,
-       holds 5 s, then you say what happened. Then it puts the bottle back.
+  T1b: arm in and lift above the table, then drives the base. The bottle's location is
+       saved, so losing sight of it while turning is fine. After driving it looks at the
+       saved spot for up to 20 s; if it doesn't see it, it searches the area around the
+       saved spot with the head; if still nothing, it assumes nothing changed and uses the
+       saved location. If the arm can't reach yet, it turns/drives again (up to 2 times)
+       to put the arm in front of the bottle. Then it grabs, lifts, holds 5 s, you say
+       what happened, and it puts the bottle back.
 
 At the end it saves a picture for every trial (camera view + top-down drawing of the
 planned approach) and one overview picture of all trials, in ~/stretch_test_results/images/.
@@ -86,6 +91,8 @@ class PickTester(Node):
         self.pause_s = declare(self, "pause_s", 15.0)
         self.hold_s = declare(self, "hold_s", 5.0)
         self.max_correction = declare(self, "max_correction_m", 0.15)
+        self.see_timeout = declare(self, "see_timeout_s", 20.0)       # T1b: look this long before searching
+        self.max_replans = int(declare(self, "max_replans", 2))        # T1b: extra base moves to line the arm up
         self.log = TestLogger(self.TEST_ID, self.TEST_NAME)
         self.pictures = []            # one composed picture per trial, for the overview at the end
 
@@ -186,53 +193,109 @@ class PickTester(Node):
         print(f"Summary: python3 testing/summarize_results.py --test {self.TEST_ID} --session latest")
 
     # ------------------------------------------------------------------ T1b execution
-    def reacquire(self):
-        """After driving: find the bottle again. Look at the saved spot first; if it isn't
-        there, sweep the head (the base does not move). Returns a measurement or None."""
+    # ------------------------------------------------------------------ T1b helpers
+    def prepare_for_driving(self, bottle_z):
+        """Before the base moves: arm all the way in, lift above table height (mindful of tables)."""
+        st = self.robot.arm_state()
+        safe_lift = min(self.arm.lift_max_m, bottle_z - self.arm.lift_grasp_z_offset_m + 0.10)
+        target = {"wrist_extension": 0.0}
+        if st is None or st[0] < safe_lift:
+            target["joint_lift"] = safe_lift
+        print(f"  Arm in, lift to {target.get('joint_lift', st[0] if st else 0):.2f} m before driving")
+        if not self.robot.switch_to_position_mode():
+            return False
+        ok, msg = self.robot.move_joints(target, 30.0)
+        if not ok:
+            print(f"  could not move the arm/lift: {msg}")
+        return ok
+
+    def local_search(self, saved_fixed):
+        """Sweep the head in a small grid around the saved spot (base does not move)."""
         self.mem.set_tracking(True)
-        if not self.mem.wait_for(lambda: self.det.sees(1.0), 4.0):
-            print("  Can't see the bottle at the saved spot after driving; looking around with the head...")
-            call_trigger(self.search_client, timeout=120.0)
-        return self.det.measure(3.0)
+        self.mem.wait_for(lambda: self.mem.tracker_status().get("pan_cmd") is not None, 2.0)
+        tr = self.mem.tracker_status()
+        if tr.get("pan_cmd") is None:
+            return False
+        self.mem.set_tracking(False)
+        pan0, tilt0 = tr["pan_cmd"], tr["tilt_cmd"]
+        for dp, dt in [(0, 0), (0.3, 0), (-0.3, 0), (0, -0.25), (0.3, -0.25), (-0.3, -0.25),
+                       (0, 0.2), (0.6, 0), (-0.6, 0)]:
+            self.robot.move_head_and_wait(pan0 + dp, tilt0 + dt, timeout=3.0)
+            if self.mem.wait_for(lambda: self.det.sees(1.0), 1.5):
+                self.mem.set_tracking(True)
+                return True
+        self.mem.set_tracking(True)
+        return False
+
+    def relocate(self, saved_fixed):
+        """Find the bottle again after a base move.
+        1) look at the saved spot for up to see_timeout_s (20 s)
+        2) not seen: search the area around the saved spot with the head
+        3) still not seen: assume nothing changed and use the saved location.
+        Returns (bottle_fixed, how)."""
+        self.mem.set_tracking(True)
+        print(f"  Looking at the saved spot (up to {self.see_timeout:.0f} s)...")
+        if self.mem.wait_for(lambda: self.det.sees(1.0), self.see_timeout):
+            m = self.det.measure(3.0)
+            if m:
+                return m["fixed"], "seen again"
+        print("  Not seen. Searching the area around the saved spot with the head...")
+        if self.local_search(saved_fixed):
+            m = self.det.measure(3.0)
+            if m:
+                return m["fixed"], "found by searching nearby"
+        print("  Still not seen. Assuming nothing changed: using the saved location.")
+        return saved_fixed, "saved location (not re-seen)"
 
     def execute(self, full, t, i):
         if ask("Check the path is clear. Enter to DRIVE + GRAB, s to skip: ").lower() == "s":
             t["outcome"], t["notes"] = "ERROR", "skipped by user"
             return
         t0 = time.time()
-        self.mem.set_tracking(True)
-        # Don't stop the drive if the head briefly loses the bottle while the base turns;
-        # it is found again (and the trial fails safely) after the move.
-        ok, failed = self.robot.execute_steps(full["base"]["steps"], None, self.get_logger().info)
-        if not ok:
-            t["outcome"], t["notes"] = "ERROR", f"base step {failed} failed or timed out"
-            return
+        bottle = tuple(full["base"]["bottle"])          # saved location (odom), kept the whole time
+        base_plan = full["base"]
+        how, arm_plan, moves = "", None, 0
 
-        # look again up close and re-plan the arm from the fresh measurement
-        m = self.reacquire()
+        for attempt in range(1 + self.max_replans):
+            if base_plan["steps"]:
+                self.prepare_for_driving(bottle[2])
+                self.mem.set_tracking(True)
+                # never stop mid-drive: the bottle's location is saved, so losing sight briefly is fine
+                ok, failed = self.robot.execute_steps(base_plan["steps"], None, self.get_logger().info)
+                moves += 1
+                if not ok:
+                    t["outcome"], t["notes"] = "ERROR", f"base step {failed} failed or timed out"
+                    return
+            new, how = self.relocate(bottle)
+            if geo.dist(new, bottle) > 0.15:
+                print(f"  The bottle is {geo.dist(new, bottle) * 100:.0f} cm from where it was; using the new spot.")
+            bottle = new
+            pose = self.robot.base_pose()
+            bx, by = geo.bottle_in_base(bottle[:2], pose)
+            arm_plan = geo.plan_arm((bx, by, bottle[2]), self.arm)
+            if arm_plan["ok"]:
+                break
+            if attempt == self.max_replans:
+                break
+            # arm can't reach from here: turn/drive again to put the arm in front of the bottle
+            print(f"  Arm can't reach yet ({arm_plan['reason']}). Re-planning the base move:")
+            base_plan = geo.plan_approach(bottle, pose, self.approach_cfg)
+            print(geo.format_plan(base_plan, self.robot.fixed_frame))
+            if not base_plan["ok"]:
+                break
+
         close = self.snap.save(f"{self.TEST_ID}_{self.log.session_id}_trial{i}_closeup",
-                               [f"{self.TEST_ID} trial {i}: after driving",
-                                "bottle seen" if m else "bottle NOT seen"])
+                               [f"{self.TEST_ID} trial {i}: ready to grab", f"bottle: {how}"])
         if close:
             print(f"Close-up picture: {close}")
-        if m is None:
-            t["outcome"] = "NOT_FOUND"
-            t["notes"] = (f"lost the bottle after driving (detections received: {self.det.received})"
-                          + (f" | close-up: {close}" if close else ""))
-            print("NOT FOUND after driving: the head looked at the saved spot and around, and didn't see the bottle.")
-            return
-        off = m["base"][0] - self.arm.arm_x_offset_m
-        if self.arm.arm_line_tol_m < abs(off) <= self.max_correction:
-            print(f"Bottle {off * 100:+.1f} cm off the arm line, correcting with a {off:+.3f} m drive")
-            self.robot.switch_to_navigation_mode()
-            self.robot.drive_by(off)
-            m = self.det.measure(3.0) or m
-        arm_plan = geo.plan_arm(m["base"], self.arm)
+        pose = self.robot.base_pose()
+        bx, by = geo.bottle_in_base(bottle[:2], pose)
+        t["metrics"].update(final_off_arm_line_cm=(bx - self.arm.arm_x_offset_m) * 100, final_reach_m=-by,
+                            base_moves=moves, bottle_source=how)
         print("\n" + geo.format_arm_plan(arm_plan), flush=True)
-        t["metrics"].update(final_off_arm_line_cm=(m["base"][0] - self.arm.arm_x_offset_m) * 100,
-                            final_reach_m=-m["base"][1])
         if not arm_plan["ok"]:
-            t["outcome"], t["notes"] = "NO_PLAN", f"after driving: {arm_plan['reason']}"
+            t["outcome"] = "NO_PLAN"
+            t["notes"] = f"after {moves} base move(s): {arm_plan['reason']}" + (f" | close-up: {close}" if close else "")
             return
         if ask("Enter to run the ARM plan, s to stop here: ").lower() == "s":
             t["outcome"], t["notes"] = "ERROR", "arm skipped by user"

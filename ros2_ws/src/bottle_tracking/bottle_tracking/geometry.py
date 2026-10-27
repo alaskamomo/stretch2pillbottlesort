@@ -347,14 +347,17 @@ class ArmConfig:
     lift_after_grasp_m: float = 0.10
     preferred_extension_m: float = 0.25    # the approach planner parks the base so the arm needs about this much
     arm_line_tol_m: float = 0.03           # bottle must be this close to the arm line or the base has to move
+    reach_margin_m: float = 0.08           # don't park where the arm needs its last 8 cm (re-measuring adds error)
 
 
 def approach_config_for_arm(arm, base_cfg=None):
     """Approach settings that match the measured arm, so 'in reach' means the arm can really get there."""
     cfg = base_cfg or ApproachConfig()
     cfg.arm_x_offset_m = arm.arm_x_offset_m
-    cfg.reach_min_m = arm.grasp_lateral_offset_m + arm.pregrasp_gap_m
-    cfg.reach_max_m = arm.grasp_lateral_offset_m + arm.ext_max_m
+    # The base only counts as "in reach" with a margin at both ends, so the fresh look after
+    # driving (a few cm different) can't push the bottle past what the arm can do.
+    cfg.reach_min_m = arm.grasp_lateral_offset_m + arm.pregrasp_gap_m + arm.reach_margin_m
+    cfg.reach_max_m = arm.grasp_lateral_offset_m + arm.ext_max_m - arm.reach_margin_m
     cfg.standoff_m = arm.grasp_lateral_offset_m + arm.preferred_extension_m
     cfg.align_tol_m = min(cfg.align_tol_m, arm.arm_line_tol_m)
     return cfg

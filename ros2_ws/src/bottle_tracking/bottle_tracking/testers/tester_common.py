@@ -73,6 +73,18 @@ def base_to_fixed(point_base, base_pose):
             point_base[2])
 
 
+def reset_head(node):
+    """Stop tracking and send the head to its home position, so every trial starts the same way."""
+    import time
+    from bottle_tracking.stretch_interface import declare
+    pan = declare(node, "head_home_pan", 0.0)
+    tilt = declare(node, "head_home_tilt", -0.45)
+    node.mem.set_tracking(False)
+    time.sleep(0.3)                # let a head move the tracker just sent finish being replaced
+    if not node.robot.move_head_and_wait(pan, tilt):
+        print("  (the head did not reach its home position)")
+
+
 def pause(seconds, message="Move the pill bottle to a new spot."):
     """Count down so you can move the bottle. Press Enter to skip the rest of the wait."""
     import select

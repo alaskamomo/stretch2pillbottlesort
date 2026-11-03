@@ -27,7 +27,8 @@ from bottle_tracking import geometry as geo
 from bottle_tracking.common import DetectionCollector, MemoryWatcher, SnapshotSaver, call_trigger
 from bottle_tracking.stretch_interface import StretchInterface, declare
 from bottle_tracking.test_logger import TestLogger
-from bottle_tracking.testers.tester_common import ask, ask_float, distance_bucket, pause, run_tester
+from bottle_tracking.testers.tester_common import (ask, ask_float, distance_bucket, pause, reset_head,
+                                                   run_tester)
 
 
 class DistanceTester(Node):
@@ -47,6 +48,7 @@ class DistanceTester(Node):
         self.start_pose = None
 
     def trial(self, i):
+        reset_head(self)
         pause(self.pause_s, f"Spot {i}/{self.trials}: put the pill bottle in a new spot.")
         with self.log.trial() as t:
             self.mem.clear()
@@ -113,6 +115,7 @@ class DistanceTester(Node):
         self.start_pose = self.robot.base_pose()
         for i in range(1, self.trials + 1):
             self.trial(i)
+        reset_head(self)
         print("\nSummary: python3 testing/summarize_results.py --test T6 --session latest")
 
 

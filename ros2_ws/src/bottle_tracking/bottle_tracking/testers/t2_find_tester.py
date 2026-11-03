@@ -30,7 +30,7 @@ from bottle_tracking.common import DetectionCollector, MemoryWatcher, SnapshotSa
 from bottle_tracking.stretch_interface import StretchInterface, declare
 from bottle_tracking.test_logger import TestLogger
 from bottle_tracking.testers.tester_common import (ask, ask_yes, declare_arm_config, distance_bucket,
-                                                   pause, run_tester)
+                                                   pause, reset_head, run_tester)
 
 
 def describe_moves(steps):
@@ -62,6 +62,7 @@ class FindTester(Node):
         self.log = TestLogger("T2", "Find the pill bottle with the head camera")
 
     def trial(self, i):
+        reset_head(self)
         pause(self.pause_s, f"Trial {i}/{self.trials}: move the pill bottle to a new spot.")
         with self.log.trial() as t:
             self.mem.clear()
@@ -132,6 +133,7 @@ class FindTester(Node):
         ask("Driver, launch and detector running? Press Enter to begin.")
         for i in range(1, self.trials + 1):
             self.trial(i)
+        reset_head(self)
         print("\nSummary: python3 testing/summarize_results.py --test T2 --session latest")
 
 

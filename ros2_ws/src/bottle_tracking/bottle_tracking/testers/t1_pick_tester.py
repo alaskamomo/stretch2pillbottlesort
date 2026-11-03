@@ -42,7 +42,7 @@ from bottle_tracking.common import DetectionCollector, MemoryWatcher, SnapshotSa
 from bottle_tracking.stretch_interface import StretchInterface, declare
 from bottle_tracking.test_logger import TestLogger
 from bottle_tracking.testers.tester_common import (ask, ask_yes, declare_arm_config, distance_bucket,
-                                                   pause, run_tester)
+                                                   pause, reset_head, run_tester)
 
 
 def how_to_replan(full, m, arm, cfg):
@@ -143,6 +143,7 @@ class PickTester(Node):
 
     # ------------------------------------------------------------------ trial
     def trial(self, i):
+        reset_head(self)
         pause(self.pause_s, f"Trial {i}/{self.trials}: put the pill bottle somewhere on the table.")
         with self.log.trial() as t:
             start_pose = self.robot.base_pose() or (0.0, 0.0, 0.0)
@@ -386,6 +387,7 @@ class PickTester(Node):
         try:
             for i in range(1, self.trials + 1):
                 self.trial(i)
+            reset_head(self)
         finally:
             self.finish()
 

@@ -6,7 +6,7 @@ Use it for tests you judge by eye or tape measure (grasp, T4, T14, ...), or for 
 test whose automatic tester isn't written yet. No ROS needed.
 
     python3 run_manual_test.py --list            # show all tests
-    python3 run_manual_test.py T8                # run every condition of T8
+    python3 run_manual_test.py T9                # run every condition of T8
     python3 run_manual_test.py T2 --condition 1.0m_center --trials 5
     python3 run_manual_test.py T4 --start 2      # resume from the 2nd condition
 

@@ -1,8 +1,8 @@
 """
 test_plan.py - every component test from the GitHub tickets, in one place.
 
-T1a, T1b, T2, T3 and T6 have automatic ROS testers (listed under "auto").
-run_manual_test.py walks you through the others (T4, T8, T9, T10, T11) trial by trial.
+T1a, T1b, T2 and T3a-T3d have automatic ROS testers (listed under "auto").
+run_manual_test.py walks you through the others (T4, T9, T10, T11) trial by trial.
 Edit conditions / trials / metrics here when the plan changes.
 """
 
@@ -37,17 +37,45 @@ TESTS = {
         "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "FALSE_POSITIVE", "ERROR"],
         "metrics": ["search_time_s", "distance_m", "spread_cm", "confidence"],
     },
-    "T3": {
-        "name": "Keep an eye on the bottle while moving, then remember it",
-        "auto": "ros2 run bottle_tracking t3_tracking_tester --ros-args --params-file $P",
-        "setup": "Part A: moves around with tracking on. Part B: moves with the head frozen, then looks back.",
-        "conditions": ["A_turn_45", "A_turn_90", "A_drive", "A_mixed", "B_rot+90", "B_rot-90", "B_rot180",
-                       "B_drive+0.3"],
-        "trials": 3,
-        "success": "A: seen >=90% of the time, error <=10 deg, drift <=3 cm. "
-                   "B: looks back at the bottle in <=3 s, drift <=3 cm.",
+    "T3a": {
+        "name": "Live distance to the pill bottle",
+        "auto": "ros2 run bottle_tracking t3a_distance_tester --ros-args --params-file $P",
+        "setup": "Live view with box and distance. Only the head moves. Enter records a spot and a picture.",
+        "conditions": ["any_spot"],
+        "trials": 5,
+        "success": "Steady within 1 cm; within 2 cm of the tape (3 cm past 1.2 m).",
         "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "ERROR"],
-        "metrics": ["percent_time_seen", "max_tracking_error_deg", "reacquire_time_s", "position_drift_cm"],
+        "metrics": ["est_m", "true_m", "error_cm", "spread_cm"],
+    },
+    "T3b": {
+        "name": "Keep an eye on the bottle while moving",
+        "auto": "ros2 run bottle_tracking t3b_tracking_tester --ros-args --params-file $P",
+        "setup": "Finds the bottle, then turns and drives with head tracking on.",
+        "conditions": ["turn_45", "turn_90", "drive", "mixed"],
+        "trials": 3,
+        "success": "Seen >=90% of the time, error <=10 deg, drift <=3 cm.",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "ERROR"],
+        "metrics": ["percent_time_seen", "max_tracking_error_deg", "position_drift_cm"],
+    },
+    "T3c": {
+        "name": "Remember the bottle after moving",
+        "auto": "ros2 run bottle_tracking t3c_remember_tester --ros-args --params-file $P",
+        "setup": "Moves with the head frozen, then looks back at the remembered spot.",
+        "conditions": ["rot+90", "rot-90", "rot180", "drive+0.3"],
+        "trials": 3,
+        "success": "Looks back at the bottle in <=3 s, drift <=3 cm.",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "ERROR"],
+        "metrics": ["reacquire_time_s", "position_drift_cm"],
+    },
+    "T3d": {
+        "name": "Find the bottle, move if approved, then grip it",
+        "auto": "ros2 run bottle_tracking t3d_grip_tester --ros-args --params-file $P",
+        "setup": "Asks before moving the base, then reaches, grips, lifts, and holds. Replaces the old T8.",
+        "conditions": ["any_spot"],
+        "trials": 3,
+        "success": "Held deep in the claw, lifted, held 5 s, not crushed.",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "NO_PLAN", "COLLISION", "DROP", "ERROR"],
+        "metrics": ["start_distance_m", "base_moves", "grip_tried", "grip_location"],
     },
     "T4": {
         "name": "'Nothing there' recovery when the bottle disappears",
@@ -58,25 +86,6 @@ TESTS = {
                    "back to searching in <=10 s; no crash.",
         "outcomes": ["SUCCESS", "MISS", "TIMEOUT", "ERROR"],
         "metrics": ["recovery_time_s", "gripper_closed"],
-    },
-    "T6": {
-        "name": "Distance to the pill bottle, then grip it (base still)",
-        "auto": "ros2 run bottle_tracking t6_distance_tester --ros-args --params-file $P",
-        "setup": "Base never moves. 60 s pause between spots. Optional tape distance, then grips if in reach.",
-        "conditions": ["any_spot"],
-        "trials": 5,
-        "success": "Steady within 1 cm; within 2 cm of the tape (3 cm past 1.2 m); held if a grip was tried.",
-        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "COLLISION", "DROP", "ERROR"],
-        "metrics": ["est_m", "true_m", "error_cm", "spread_cm", "grip_tried", "grip_location"],
-    },
-    "T8": {
-        "name": "Grasp only (gripper isolated)",
-        "setup": "Place the gripper around the bottle directly; test close -> lift -> hold.",
-        "conditions": ["effort_low_middle", "effort_med_middle", "effort_high_middle", "effort_med_near_cap"],
-        "trials": 5,
-        "success": "Middle of fingers contacts bottle, lifts >=5 cm, holds 5 s, not crushed.",
-        "outcomes": ["SUCCESS", "MISS", "DROP", "ERROR"],
-        "metrics": ["gripper_value", "grasp_height_cm"],
     },
     "T9": {
         "name": "Bottle orientation classification",

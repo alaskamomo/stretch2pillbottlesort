@@ -34,8 +34,10 @@ setup(
             "t1a_plan_tester = bottle_tracking.testers.t1_pick_tester:main_plan",
             "t1b_execute_tester = bottle_tracking.testers.t1_pick_tester:main_execute",
             "t2_find_tester = bottle_tracking.testers.t2_find_tester:main",
-            "t3_tracking_tester = bottle_tracking.testers.t3_tracking_tester:main",
-            "t6_distance_tester = bottle_tracking.testers.t6_distance_tester:main",
+            "t3a_distance_tester = bottle_tracking.testers.t3_distance_grip_tester:main_distance",
+            "t3b_tracking_tester = bottle_tracking.testers.t3_tracking_tester:main_tracking",
+            "t3c_remember_tester = bottle_tracking.testers.t3_tracking_tester:main_remember",
+            "t3d_grip_tester = bottle_tracking.testers.t3_distance_grip_tester:main_grip",
         ],
     },
 )

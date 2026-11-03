@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 """
-T3 - keep an eye on the pill bottle while the robot moves around, then remember it.
+T3b / T3c - keep an eye on the pill bottle while the robot moves, then remember it.
 
-  ros2 run bottle_tracking t3_tracking_tester --ros-args --params-file $P -p trials:=3
+  T3b (watch while moving):
+    ros2 run bottle_tracking t3b_tracking_tester --ros-args --params-file $P -p trials:=3
 
-Runs Part A, then Part B, in one go.
+  T3c (remember after moving):
+    ros2 run bottle_tracking t3c_remember_tester --ros-args --params-file $P -p trials:=3
 
-Part A - watch while moving: the robot finds the bottle, then moves around (turns,
-  drives, and a mix) with head tracking ON. The camera should stay on the bottle the
-  whole time. Every move pattern ends back where it started.
+T3b: the robot finds the bottle, then moves around (turns, drives, and a mix) with head
+  tracking ON. The camera should stay on the bottle the whole time. Every move pattern ends
+  back where it started.
 
-Part B - remember after moving: first the robot makes sure it sees the bottle (it
-  searches and turns the base if needed). Then each trial moves the base with the head
-  FROZEN, so the camera loses the bottle. Afterward the head turns straight back to the
-  remembered spot (no searching) and should see the bottle there.
+T3c: first the robot makes sure it sees the bottle (it searches and turns the base if needed).
+  Then each trial moves the base with the head FROZEN, so the camera loses the bottle.
+  Afterward the head turns straight back to the remembered spot (no searching) and should
+  see the bottle there.
 
 Leave about 1 m of clear space around the robot.
-Needs: driver, bottle_tracking launch with the YOLO detector.
+Needs: driver, head camera, bottle_tracking launch with the YOLO detector.
 """
 
 import math
@@ -49,9 +51,11 @@ MOVES_B = {
 }
 
 
-class T3Tester(Node):
+class TrackingTester(Node):
+    TEST_ID, TEST_NAME = "T3b", "Keep an eye on the bottle while moving"
+
     def __init__(self):
-        super().__init__("t3_tracking_tester")
+        super().__init__(f"{self.TEST_ID.lower()}_tester")
         cb = ReentrantCallbackGroup()
         self.robot = StretchInterface(self, cb)
         self.mem = MemoryWatcher(self, cb)
@@ -59,8 +63,7 @@ class T3Tester(Node):
         self.snap = SnapshotSaver(self, cb)
         self.search_client = self.create_client(Trigger, "/head_search/search", callback_group=cb)
         self.trials = int(declare(self, "trials", 3))
-        self.parts = declare(self, "part", "AB").upper()
-        self.log = TestLogger("T3", "Keep an eye on the bottle while moving, then remember it")
+        self.log = TestLogger(self.TEST_ID, self.TEST_NAME)
 
     # ---------------------------------------------------------------- helpers
     def centered(self, max_deg):
@@ -105,12 +108,12 @@ class T3Tester(Node):
 
     # ---------------------------------------------------------------- Part A
     def trial_a(self, name, moves):
-        with self.log.trial(condition=f"A_{name}") as t:
+        with self.log.trial(condition=name) as t:
             if not self.ensure_seen():
                 t["outcome"], t["notes"] = "NOT_FOUND", "could not find/center the bottle before moving"
                 return
             before = self.mem.position()
-            print(f"  Part A {name}: moving with tracking ON...")
+            print(f"  {name}: moving with tracking ON...")
             ok, samples = self.run_moves_sampling(moves)
             if not ok:
                 t["outcome"], t["notes"] = "ERROR", "base motion failed or timed out"
@@ -134,14 +137,14 @@ class T3Tester(Node):
 
     # ---------------------------------------------------------------- Part B
     def trial_b(self, name, kind, amount):
-        with self.log.trial(condition=f"B_{name}") as t:
+        with self.log.trial(condition=name) as t:
             if not self.ensure_seen():
                 t["outcome"], t["notes"] = "NOT_FOUND", "could not find/center the bottle before moving"
                 return
             before = self.mem.position()
             self.mem.set_tracking(False)
             time.sleep(0.3)
-            print(f"  Part B {name}: moving with the head FROZEN...")
+            print(f"  {name}: moving with the head FROZEN...")
             ok = self.move(kind, amount)
             if not ok:
                 t["outcome"], t["notes"] = "ERROR", "base motion failed or timed out"
@@ -172,29 +175,38 @@ class T3Tester(Node):
         self.move(kind, -amount)
         time.sleep(0.5)
 
+    def run_trials(self):
+        for name, moves in PATTERNS_A.items():
+            for _ in range(self.trials):
+                self.trial_a(name, moves)
+
     def run(self):
         print(__doc__)
         ask("Put the pill bottle on the table near the robot. Press Enter to start.")
-        if "A" in self.parts:
-            print("\n===== PART A: watch the bottle while moving =====")
-            for name, moves in PATTERNS_A.items():
-                for _ in range(self.trials):
-                    self.trial_a(name, moves)
-        if "B" in self.parts:
-            print("\n===== PART B: remember the bottle after moving =====")
-            print("Making sure the robot sees the bottle first (it will search and turn if needed)...")
-            if not self.ensure_seen():
-                print("Could not find the bottle. Check the detector and try again.")
-                return
-            for name, (kind, amount) in MOVES_B.items():
-                for _ in range(self.trials):
-                    self.trial_b(name, kind, amount)
-        print("\nSummary: python3 testing/summarize_results.py --test T3 --session latest")
+        self.run_trials()
+        print(f"\nSummary: python3 testing/summarize_results.py --test {self.TEST_ID} --session latest")
 
 
-def main():
-    run_tester(T3Tester)
+class RememberTester(TrackingTester):
+    TEST_ID, TEST_NAME = "T3c", "Remember the bottle after moving"
+
+    def run_trials(self):
+        print("Making sure the robot sees the bottle first (it will search and turn if needed)...")
+        if not self.ensure_seen():
+            print("Could not find the bottle. Check the detector and try again.")
+            return
+        for name, (kind, amount) in MOVES_B.items():
+            for _ in range(self.trials):
+                self.trial_b(name, kind, amount)
+
+
+def main_tracking():
+    run_tester(TrackingTester)
+
+
+def main_remember():
+    run_tester(RememberTester)
 
 
 if __name__ == "__main__":
-    main()
+    main_tracking()

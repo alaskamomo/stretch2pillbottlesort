@@ -6,8 +6,8 @@ Service: /head_search/search (std_srvs/Trigger)
   1. If memory already has the bottle (KNOWN), point the head at the saved spot and
      wait saved_look_s for a detection. Done if seen. (No sweep, no spin.)
      If not seen, the saved spot is forgotten before the sweep.
-  2. Otherwise sweep the head while the base stays still, starting straight ahead and
-     level: each tilt in search_tilt_order, center-out through search_pan_order.
+  2. Otherwise sweep the head while the base stays still, at each tilt in
+     search_tilt_order the head looks left to right through search_pan_order.
      Done as soon as the detector sees the bottle.
   3. Only if the whole sweep finds nothing: rotate the base base_step_deg and sweep
      again, up to max_base_rotations times.
@@ -43,10 +43,10 @@ class HeadSearchNode(Node):
         self.robot = StretchInterface(self, cb)
         self.mem = MemoryWatcher(self, cb)
 
-        # Start straight ahead and level, then work outward and downward.
+        # Each row looks left to right at one tilt, starting at a slight downward angle.
         self.pans = list(declare(self, "search_pan_order",
-                                 [0.0, 0.7, -0.7, 1.4, -1.4, -2.1, -2.8, -3.5]))
-        self.tilts = list(declare(self, "search_tilt_order", [0.0, -0.45, -0.85]))
+                                 [1.4, 0.7, 0.0, -0.7, -1.4, -2.1, -2.8, -3.5]))
+        self.tilts = list(declare(self, "search_tilt_order", [-0.25, -0.85]))
         self.dwell = declare(self, "dwell_s", 0.8)                 # time to let the detector run
         # the head has to turn first and the detector only runs about 2 Hz, so give it time
         self.look_saved_timeout = declare(self, "saved_look_s", 6.0)

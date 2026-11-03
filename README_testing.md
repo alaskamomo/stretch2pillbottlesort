@@ -2,7 +2,7 @@
 
 ```
 testing/                         logging + summary + manual tester + bottle watcher (plain Python)
-docs/github_tickets.txt          current tickets (T0, T1a, T1b, T2, T3, T4, T6, T8, T9, T10, T11)
+docs/github_tickets.txt          current tickets (T0, T1a, T1b, T2, T3a-T3d, T4, T9, T10, T11)
 ros2_ws/src/bottle_tracking/     ROS 2 package
   bottle_tracking/
     yolo_detector_node.py        YOUR trained YOLOv8 model on the head camera -> /pill_bottle/detection
@@ -13,7 +13,7 @@ ros2_ws/src/bottle_tracking/     ROS 2 package
     calibrate_arm.py             measures where the gripper really is (run once)
     fake_detector_node.py        fake bottle for testing without YOLO
     geometry.py                  base + arm planning math (unit tested)
-    testers/                     T1a, T1b, T2, T3, T6
+    testers/                     T1a, T1b, T2, T3a-T3d
   config/params.yaml             all settings
   launch/bottle_tracking.launch.py
 ```
@@ -78,9 +78,11 @@ The arm and wrist will move, so clear the right side of the robot first. This sa
 | T1a find + plan (no motion) | `ros2 run bottle_tracking t1a_plan_tester --ros-args --params-file $P -p trials:=3` |
 | T1b find + plan + drive + grab | `ros2 run bottle_tracking t1b_execute_tester --ros-args --params-file $P -p trials:=3` |
 | T2 find + report position | `ros2 run bottle_tracking t2_find_tester --ros-args --params-file $P -p trials:=5` |
-| T3 watch while moving, then remember | `ros2 run bottle_tracking t3_tracking_tester --ros-args --params-file $P -p trials:=3` |
-| T6 distance, base still | `ros2 run bottle_tracking t6_distance_tester --ros-args --params-file $P -p trials:=5` |
-| T4, T8, T9, T10, T11 | `python3 testing/run_manual_test.py T8` |
+| T3a live distance | `ros2 run bottle_tracking t3a_distance_tester --ros-args --params-file $P`, then view `/pill_bottle/live_view` |
+| T3b watch while moving | `ros2 run bottle_tracking t3b_tracking_tester --ros-args --params-file $P -p trials:=3` |
+| T3c remember after moving | `ros2 run bottle_tracking t3c_remember_tester --ros-args --params-file $P -p trials:=3` |
+| T3d move if approved, then grip | `ros2 run bottle_tracking t3d_grip_tester --ros-args --params-file $P -p trials:=3` |
+| T4, T9, T10, T11 | `python3 testing/run_manual_test.py T9` |
 | Results | `python3 testing/summarize_results.py --session latest` (add `--markdown` for GitHub) |
 
 Change the pause between trials with `-p pause_s:=30`.

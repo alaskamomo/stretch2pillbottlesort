@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-T6 - distance to the pill bottle at different spots, base never moves.
+T6 - distance to the pill bottle at different spots, then grip it. The base never moves.
 
   ros2 run bottle_tracking t6_distance_tester --ros-args --params-file $P -p trials:=5
   (default pause between spots is 60 s; change with -p pause_s:=30)
@@ -11,8 +11,12 @@ Each spot:
   3. Averages the detections for 3 s and prints the distance: from the base center
      (flat on the floor) and straight-line from the camera, plus how steady it was.
   4. Optional: type the tape-measured distance from the base center to get the error.
+  5. If the arm can reach the bottle from where the base is, you press Enter and it reaches,
+     grips, lifts, holds, and puts the bottle back. If it can't, it says why and skips the grip.
 
-Pass: steady to within 1 cm, and (if you measured) within 2 cm of the tape (3 cm past 1.2 m).
+Pass: steady to within 1 cm, within 2 cm of the tape (3 cm past 1.2 m) if measured, and held
+in the claw if a grip was tried. The arm reaches out the robot's right side, so put the bottle
+beside the arm, within 3 cm of the arm's line, and about 0.50 to 0.80 m from the base center.
 Needs: driver, bottle_tracking launch with the YOLO detector.
 """
 
@@ -27,8 +31,8 @@ from bottle_tracking import geometry as geo
 from bottle_tracking.common import DetectionCollector, MemoryWatcher, SnapshotSaver, call_trigger
 from bottle_tracking.stretch_interface import StretchInterface, declare
 from bottle_tracking.test_logger import TestLogger
-from bottle_tracking.testers.tester_common import (ask, ask_float, distance_bucket, pause, reset_head,
-                                                   run_tester)
+from bottle_tracking.testers.tester_common import (ask, ask_float, ask_yes, declare_arm_config,
+                                                   distance_bucket, pause, reset_head, run_tester)
 
 
 class DistanceTester(Node):
@@ -44,7 +48,9 @@ class DistanceTester(Node):
         self.pause_s = declare(self, "pause_s", 60.0)
         self.measure_s = declare(self, "measure_s", 3.0)
         self.max_spread_cm = declare(self, "max_spread_cm", 1.0)
-        self.log = TestLogger("T6", "Distance to the pill bottle (base still)")
+        self.hold_s = declare(self, "hold_s", 5.0)
+        self.arm = declare_arm_config(self)
+        self.log = TestLogger("T6", "Distance to the pill bottle, then grip it (base still)")
         self.start_pose = None
 
     def trial(self, i):
@@ -107,7 +113,57 @@ class DistanceTester(Node):
             if pic:
                 notes.append(f"picture: {pic}")
             t["outcome"] = "SUCCESS" if good else "MISS"
+            grip = self.try_grip(m, t)
+            if grip:
+                notes.append(grip)
             t["notes"] = "; ".join(notes)
+
+    def try_grip(self, m, t):
+        """Reach and grip from where the base is. Returns a note, and changes the outcome if the grip failed."""
+        plan = geo.plan_arm(m["base"], self.arm)
+        print("\n" + geo.format_arm_plan(plan), flush=True)
+        t["metrics"]["grip_tried"] = False
+        if not plan["ok"]:
+            print("  No grip this spot: the base stays still, and the arm can't reach the bottle from here.")
+            return f"no grip: {plan['reason']}"
+        if ask("Enter to REACH and GRIP, s to skip: ").lower() == "s":
+            return "grip skipped by user"
+        t["metrics"]["grip_tried"] = True
+        lift = min(self.arm.lift_max_m, plan["lift_grasp_m"] + self.arm.approach_height_m)
+        if not self.robot.switch_to_position_mode():
+            t["outcome"] = "ERROR"
+            return "could not switch to position mode"
+        ok, msg = self.robot.move_joints({"wrist_extension": 0.0, "joint_lift": lift}, 30.0)
+        if ok:
+            ok, failed, msg = self.robot.execute_arm_steps(plan["steps"], self.get_logger().info)
+        if not ok:
+            t["outcome"] = "ERROR"
+            return f"arm failed: {msg}"
+        print(f"Holding for {self.hold_s:.0f} s...")
+        time.sleep(self.hold_s)
+        hit = ask_yes("Did it hit anything or knock the bottle over?")
+        res = ask("Result: [h]eld deep in the claw, [e]held by the fingertips/cap, "
+                  "[d]ropped, [m]issed (air/pushed it): ").lower()[:1]
+        t["metrics"]["grip_location"] = {"h": "deep", "e": "tips"}.get(res, "none")
+        if hit:
+            t["outcome"] = "COLLISION"
+        elif res == "d":
+            t["outcome"] = "DROP"
+        elif res != "h":
+            t["outcome"] = "MISS"
+        self.put_back(plan)
+        return f"grip: {t['metrics']['grip_location']}"
+
+    def put_back(self, plan):
+        if not ask_yes("Put the bottle back down and retract?", True):
+            return
+        lift = plan["lift_grasp_m"]
+        self.robot.move_joints({"joint_lift": lift + 0.01})
+        self.robot.gripper("open")
+        self.robot.move_joints({"wrist_extension": 0.0})
+        self.robot.move_joints({"joint_lift": lift + self.arm.approach_height_m})
+        if plan.get("floor"):
+            self.robot.move_joints({"joint_wrist_pitch": 0.0})
 
     def run(self):
         print(__doc__)

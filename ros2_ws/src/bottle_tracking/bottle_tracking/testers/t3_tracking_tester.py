@@ -70,7 +70,9 @@ class T3Tester(Node):
     def ensure_seen(self):
         """Make sure the robot sees the bottle and is centered on it. Searches (and turns the base) if needed."""
         self.mem.set_tracking(True)
-        if self.mem.wait_for(lambda: self.det.sees() and self.centered(5.0), 4.0):
+        # A low-confidence bottle may only be detected every few seconds. Wait for it before
+        # searching, because a failed search forgets the saved spot.
+        if self.mem.wait_for(lambda: self.det.sees() and self.centered(5.0), 10.0):
             return True
         print("Not looking at the bottle; searching (the base may turn)...")
         ok, _ = call_trigger(self.search_client, timeout=180.0)

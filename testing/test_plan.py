@@ -13,7 +13,7 @@ TESTS = {
         "setup": "Head-only search (base never turns). Prints PLAN + the plan, or NO PLAN + why + how to fix.",
         "conditions": ["any_spot"],
         "trials": 3,
-        "success": "Bottle in view -> PLAN printed. Saves a picture of every planned approach.",
+        "success": "Bottle in view -> PLAN printed. Not found and you confirm it wasn't there -> SUCCESS.",
         "outcomes": ["SUCCESS", "NOT_FOUND", "NO_PLAN", "ERROR"],
         "metrics": ["search_time_s", "distance_m", "base_steps", "arm_extension_m"],
     },

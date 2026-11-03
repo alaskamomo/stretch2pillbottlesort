@@ -344,6 +344,8 @@ class ArmConfig:
     # Grasp motion settings
     approach_height_m: float = 0.05        # come in this far above the grasp height
     pregrasp_gap_m: float = 0.06           # stop this far short before lowering
+    grasp_depth_m: float = 0.07            # reach this far past the gripper center so the bottle sits
+                                           # deep in the claw, not at the fingertips
     lift_after_grasp_m: float = 0.10
     preferred_extension_m: float = 0.25    # the approach planner parks the base so the arm needs about this much
     arm_line_tol_m: float = 0.03           # bottle must be this close to the arm line or the base has to move
@@ -356,9 +358,11 @@ def approach_config_for_arm(arm, base_cfg=None):
     cfg.arm_x_offset_m = arm.arm_x_offset_m
     # The base only counts as "in reach" with a margin at both ends, so the fresh look after
     # driving (a few cm different) can't push the bottle past what the arm can do.
+    reach = arm.grasp_lateral_offset_m - arm.grasp_depth_m     # bottle distance at zero planned extension
+    # the arm must still have room to stop short of the bottle before lowering, whatever the depth
     cfg.reach_min_m = arm.grasp_lateral_offset_m + arm.pregrasp_gap_m + arm.reach_margin_m
-    cfg.reach_max_m = arm.grasp_lateral_offset_m + arm.ext_max_m - arm.reach_margin_m
-    cfg.standoff_m = arm.grasp_lateral_offset_m + arm.preferred_extension_m
+    cfg.reach_max_m = reach + arm.ext_max_m - arm.reach_margin_m
+    cfg.standoff_m = reach + arm.preferred_extension_m
     cfg.align_tol_m = min(cfg.align_tol_m, arm.arm_line_tol_m)
     return cfg
 
@@ -375,8 +379,8 @@ def plan_arm(bottle_base, arm=None):
     plan = {"ok": False, "reason": "", "steps": [], "bottle_base": (bx, by, bz)}
 
     off_line = bx - arm.arm_x_offset_m
-    ext = lateral - arm.grasp_lateral_offset_m
-    ext_pre = ext - arm.pregrasp_gap_m
+    ext = lateral - arm.grasp_lateral_offset_m + arm.grasp_depth_m
+    ext_pre = ext - arm.grasp_depth_m - arm.pregrasp_gap_m     # lower the gripper clear of the bottle
     lift_grasp = bz - arm.lift_grasp_z_offset_m
     lift_high = lift_grasp + arm.approach_height_m
     lift_up = lift_grasp + arm.lift_after_grasp_m
@@ -405,7 +409,7 @@ def plan_arm(bottle_base, arm=None):
         {"type": "LIFT", "to": lift_high, "why": f"gripper {arm.approach_height_m * 100:.0f} cm above grasp height"},
         {"type": "ARM", "to": ext_pre, "why": f"stop {arm.pregrasp_gap_m * 100:.0f} cm before the bottle"},
         {"type": "LIFT", "to": lift_grasp, "why": "gripper at the middle of the bottle"},
-        {"type": "ARM", "to": ext, "why": "fingers around the bottle"},
+        {"type": "ARM", "to": ext, "why": f"bottle {arm.grasp_depth_m * 100:.0f} cm deep in the claw"},
         {"type": "GRIPPER", "state": "close", "why": "grab"},
         {"type": "LIFT", "to": lift_up, "why": f"lift {arm.lift_after_grasp_m * 100:.0f} cm"},
     ]

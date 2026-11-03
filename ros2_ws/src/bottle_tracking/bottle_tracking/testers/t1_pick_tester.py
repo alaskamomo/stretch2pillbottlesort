@@ -91,6 +91,8 @@ class PickTester(Node):
         self.pause_s = declare(self, "pause_s", 15.0)
         self.hold_s = declare(self, "hold_s", 5.0)
         self.max_correction = declare(self, "max_correction_m", 0.15)
+        # T1b default: if the bottle can't be re-seen, trust the saved spot. T4 sets this false.
+        self.grab_unseen = declare(self, "grab_unseen", True)
         self.see_timeout = declare(self, "see_timeout_s", 20.0)       # T1b: look this long before searching
         self.max_replans = int(declare(self, "max_replans", 2))        # T1b: extra base moves to line the arm up
         self.log = TestLogger(self.TEST_ID, self.TEST_NAME)
@@ -123,8 +125,13 @@ class PickTester(Node):
     def picture(self, i, m, full, start_pose, headline):
         """Camera view + top-down plan drawing for this trial. Saved now, and kept for the overview."""
         try:
-            cam = self.snap.grab([f"{self.TEST_ID} trial {i}: {headline}"] +
-                                 ([f"{m['base_distance_m']:.2f} m from the base"] if m else []))
+            self.mem.set_tracking(False)      # hold the head still for the picture
+            time.sleep(0.5)
+            try:
+                cam = self.snap.grab([f"{self.TEST_ID} trial {i}: {headline}"] +
+                                     ([f"{m['base_distance_m']:.2f} m from the base"] if m else []))
+            finally:
+                self.mem.set_tracking(True)
             title = "PLAN" if full is not None and full["ok"] else "NO PLAN"
             drawing = plan_drawing.draw_plan(full, m["fixed"] if m else None, start_pose, self.arm,
                                              f"Trial {i}: {title}")
@@ -152,7 +159,9 @@ class PickTester(Node):
                 pic = self.picture(i, None, None, start_pose, "NO PLAN - bottle not seen")
                 print(f"  Picture: {pic}" if pic else "")
                 print("=" * 70)
-                t["condition"], t["outcome"] = "not_found", "NOT_FOUND"
+                gone = not self.EXECUTE and ask_yes("Confirm: was the pill bottle really not there?", True)
+                t["condition"] = "no_bottle" if gone else "not_found"
+                t["outcome"] = "SUCCESS" if gone else "NOT_FOUND"
                 t["notes"] = "bottle not seen" + (f" | picture: {pic}" if pic else "")
                 return
 
@@ -247,6 +256,14 @@ class PickTester(Node):
         print("  Still not seen. Assuming nothing changed: using the saved location.")
         return saved_fixed, "saved location (not re-seen)"
 
+    def confirm_bottle(self, bottle):
+        """Is the bottle still at this spot? Used just before the arm moves when grab_unseen is false."""
+        if self.mem.wait_for(lambda: self.det.sees(1.0), 3.0):
+            return True
+        print("  Can't see the bottle; searching with the head...")
+        m, _ = self.find_bottle()
+        return m is not None and geo.dist(m["fixed"], bottle) <= 0.05
+
     def execute(self, full, t, i):
         if ask("Check the path is clear. Enter to DRIVE + GRAB, s to skip: ").lower() == "s":
             t["outcome"], t["notes"] = "ERROR", "skipped by user"
@@ -299,6 +316,11 @@ class PickTester(Node):
             return
         if ask("Enter to run the ARM plan, s to stop here: ").lower() == "s":
             t["outcome"], t["notes"] = "ERROR", "arm skipped by user"
+            return
+        if not self.grab_unseen and not self.confirm_bottle(bottle):
+            t["outcome"] = "NOT_FOUND"
+            t["notes"] = "bottle gone before the arm moved; gripper never closed"
+            print("Bottle is gone. The arm did not move and the gripper did not close.")
             return
         ok, failed, msg = self.robot.execute_arm_steps(arm_plan["steps"], self.get_logger().info)
         t["metrics"]["exec_time_s"] = time.time() - t0

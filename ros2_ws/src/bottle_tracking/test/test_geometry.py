@@ -96,13 +96,14 @@ def test_deep_table_gives_no_plan():
     assert not plan["ok"] and "table clearance" in plan["reason"]
 
 
-ARM = geo.ArmConfig(grasp_lateral_offset_m=0.30, lift_grasp_z_offset_m=-0.05, arm_x_offset_m=0.02)
+ARM = geo.ArmConfig(grasp_lateral_offset_m=0.30, lift_grasp_z_offset_m=-0.05, arm_x_offset_m=0.02,
+                    grasp_depth_m=0.03)
 
 
 def test_arm_plan_reaches_bottle_middle():
     plan = geo.plan_arm((0.02, -0.55, 0.80), ARM)
     assert plan["ok"], plan["reason"]
-    assert plan["extension_m"] == pytest.approx(0.25)
+    assert plan["extension_m"] == pytest.approx(0.28)            # 0.25 to reach it + 0.03 into the fingers
     assert plan["lift_grasp_m"] == pytest.approx(0.85)          # z - offset
     types = [s["type"] for s in plan["steps"]]
     assert types == ["WRIST", "GRIPPER", "LIFT", "ARM", "LIFT", "ARM", "GRIPPER", "LIFT"]
@@ -142,3 +143,13 @@ def test_plan_does_not_park_at_the_edge_of_reach():
     # still valid if the fresh look after driving is 2 cm farther
     fx, fy, fz = full["arm"]["bottle_base"]
     assert geo.plan_arm((fx, fy - 0.02, fz), arm)["ok"]
+
+
+def test_deep_grasp_still_lowers_clear_of_the_bottle():
+    """Going deeper must not move the point where the gripper comes down."""
+    shallow = geo.ArmConfig(grasp_depth_m=0.0)
+    deep = geo.ArmConfig(grasp_depth_m=0.07)
+    bottle = (0.0, -0.55, 0.80)
+    arms = [[s["to"] for s in geo.plan_arm(bottle, a)["steps"] if s["type"] == "ARM"] for a in (shallow, deep)]
+    assert arms[0][0] == pytest.approx(arms[1][0])
+    assert arms[1][1] == pytest.approx(arms[0][1] + 0.07)

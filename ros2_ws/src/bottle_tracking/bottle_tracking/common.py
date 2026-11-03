@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+from collections import deque
 
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from std_msgs.msg import Bool, Empty, String
@@ -207,22 +208,43 @@ class SnapshotSaver:
         self.folder = folder or os.path.join(
             os.environ.get("STRETCH_TEST_RESULTS", os.path.expanduser("~/stretch_test_results")), "images")
         self.latest = None
+        self.frames = deque(maxlen=20)      # (wall_time, msg), used to pick the sharpest frame
         self._lock = threading.Lock()
         node.create_subscription(Image, "/pill_bottle/debug_image", self._on_img, 2, callback_group=cb_group)
 
     def _on_img(self, msg):
         with self._lock:
             self.latest = msg
+            self.frames.append((time.time(), msg))
+
+    @staticmethod
+    def _to_array(msg):
+        import numpy as np
+        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)[:, :msg.width * 3]
+        return img.reshape(msg.height, msg.width, 3).copy()
+
+    @staticmethod
+    def _sharpness(img):
+        """Bigger is sharper: motion blur flattens the differences between neighboring pixels."""
+        import numpy as np
+        gray = img.astype(np.float32).mean(axis=2)
+        return float(np.diff(gray, axis=0).var() + np.diff(gray, axis=1).var())
+
+    def sharpest(self, seconds=2.0):
+        """Collect new frames for `seconds` and return the sharpest, or the newest if none arrive."""
+        t0 = time.time()
+        time.sleep(seconds)
+        with self._lock:
+            msgs = [m for t, m in self.frames if t >= t0] or ([self.latest] if self.latest else [])
+        if not msgs:
+            return None
+        return max((self._to_array(m) for m in msgs), key=self._sharpness)
 
     def grab(self, lines=()):
         """Newest camera picture as a BGR numpy array with text lines on it, or None."""
-        import numpy as np
-        with self._lock:
-            msg = self.latest
-        if msg is None:
+        img = self.sharpest()
+        if img is None:
             return None
-        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)[:, :msg.width * 3]
-        img = img.reshape(msg.height, msg.width, 3).copy()
         try:
             import cv2
             lines = [ln for ln in lines if ln]

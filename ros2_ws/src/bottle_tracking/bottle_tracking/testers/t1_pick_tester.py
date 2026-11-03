@@ -48,9 +48,7 @@ from bottle_tracking.testers.tester_common import (ask, ask_yes, declare_arm_con
 def how_to_replan(full, m, arm, cfg):
     """Plain-language list of what would make a plan possible."""
     if m is None:
-        return ["The head camera did not see the pill bottle.",
-                "To make a new plan: put the bottle where the head can see it (in front of or beside the "
-                "robot, on the table), or check the camera picture for why the detector missed it."]
+        return ["The head camera did not see the pill bottle, from here or along the search plan above."]
     reason = full["reason"] if full else ""
     d = m["base_distance_m"]
     tips = []
@@ -93,6 +91,8 @@ class PickTester(Node):
         self.max_correction = declare(self, "max_correction_m", 0.15)
         # T1b default: if the bottle can't be re-seen, trust the saved spot. T4 sets this false.
         self.grab_unseen = declare(self, "grab_unseen", True)
+        self.search_moves = int(declare(self, "search_moves", 2))     # move-up steps in the search plan
+        self.search_step = declare(self, "search_step_m", 1.0)
         self.see_timeout = declare(self, "see_timeout_s", 20.0)       # T1b: look this long before searching
         self.max_replans = int(declare(self, "max_replans", 2))        # T1b: extra base moves to line the arm up
         self.log = TestLogger(self.TEST_ID, self.TEST_NAME)
@@ -100,8 +100,7 @@ class PickTester(Node):
 
     # ------------------------------------------------------------------ find + plan
     def find_bottle(self):
-        self.mem.clear()
-        time.sleep(0.3)
+        # Don't clear the memory here: the search checks the saved spot first, then sweeps.
         ok, msg = call_trigger(self.search_client, timeout=120.0)
         try:
             info = json.loads(msg)
@@ -149,6 +148,13 @@ class PickTester(Node):
             start_pose = self.robot.base_pose() or (0.0, 0.0, 0.0)
             m, info = self.find_bottle()
             t["metrics"] = {"search_time_s": info.get("search_time_s")}
+            searched = False
+            if m is None:
+                plan = geo.plan_search(self.search_moves, self.search_step)
+                print("\n" + geo.format_search_plan(plan))
+                if self.EXECUTE:
+                    m, searched = self.run_search_plan(plan), True
+                    start_pose = self.robot.base_pose() or start_pose
 
             print("\n" + "=" * 70)
             if m is None:
@@ -159,7 +165,7 @@ class PickTester(Node):
                 pic = self.picture(i, None, None, start_pose, "NO PLAN - bottle not seen")
                 print(f"  Picture: {pic}" if pic else "")
                 print("=" * 70)
-                gone = not self.EXECUTE and ask_yes("Confirm: was the pill bottle really not there?", True)
+                gone = not searched and not self.EXECUTE and ask_yes("Confirm: was the pill bottle really not there?", True)
                 t["condition"] = "no_bottle" if gone else "not_found"
                 t["outcome"] = "SUCCESS" if gone else "NOT_FOUND"
                 t["notes"] = "bottle not seen" + (f" | picture: {pic}" if pic else "")
@@ -206,7 +212,8 @@ class PickTester(Node):
     def prepare_for_driving(self, bottle_z):
         """Before the base moves: arm all the way in, lift above table height (mindful of tables)."""
         st = self.robot.arm_state()
-        safe_lift = min(self.arm.lift_max_m, bottle_z - self.arm.lift_grasp_z_offset_m + 0.10)
+        safe_lift = min(self.arm.lift_max_m,
+                        max(self.arm.lift_min_m, bottle_z - self.arm.lift_grasp_z_offset_m + 0.10))
         target = {"wrist_extension": 0.0}
         if st is None or st[0] < safe_lift:
             target["joint_lift"] = safe_lift
@@ -255,6 +262,22 @@ class PickTester(Node):
                 return m["fixed"], "found by searching nearby"
         print("  Still not seen. Assuming nothing changed: using the saved location.")
         return saved_fixed, "saved location (not re-seen)"
+
+    def run_search_plan(self, steps):
+        """T1b: carry out the search plan, looking after each move. Returns a measurement or None."""
+        if ask("Check the path ahead is clear. Enter to run the SEARCH plan, s to skip: ").lower() == "s":
+            return None
+        self.prepare_for_driving(0.80)
+        for step in steps:
+            ok, _ = self.robot.execute_steps([step], None, self.get_logger().info)
+            if not ok:
+                print("  Base move failed; stopping the search.")
+                return None
+            m, _ = self.find_bottle()
+            if m is not None:
+                print(f"  Found the bottle {m['base_distance_m']:.2f} m away.")
+                return m
+        return None
 
     def confirm_bottle(self, bottle):
         """Is the bottle still at this spot? Used just before the arm moves when grab_unseen is false."""
@@ -354,6 +377,8 @@ class PickTester(Node):
         self.robot.gripper("open")
         self.robot.move_joints({"wrist_extension": 0.0})
         self.robot.move_joints({"joint_lift": lift_grasp + self.arm.approach_height_m})
+        if arm_plan.get("floor"):
+            self.robot.move_joints({"joint_wrist_pitch": 0.0})
 
     def run(self):
         print(__doc__)

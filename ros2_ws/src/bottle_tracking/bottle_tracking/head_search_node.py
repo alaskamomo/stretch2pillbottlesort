@@ -4,7 +4,8 @@ head_search_node - finds the bottle by moving the HEAD first, the base only if n
 
 Service: /head_search/search (std_srvs/Trigger)
   1. If memory already has the bottle (KNOWN), point the head at the saved spot and
-     wait look_saved_timeout_s for a detection. Done if seen. (No sweep, no spin.)
+     wait saved_look_s for a detection. Done if seen. (No sweep, no spin.)
+     If not seen, the saved spot is forgotten before the sweep.
   2. Otherwise sweep the head through head_pan_positions x head_tilt_positions while
      the base stays still. Done as soon as the detector sees the bottle.
   3. Only if the whole sweep finds nothing: rotate the base base_step_deg and sweep
@@ -45,7 +46,8 @@ class HeadSearchNode(Node):
                                  [1.4, 0.7, 0.0, -0.7, -1.4, -2.1, -2.8, -3.5]))
         self.tilts = list(declare(self, "head_tilt_positions", [-0.45, -0.85]))
         self.dwell = declare(self, "dwell_s", 0.8)                 # time to let the detector run
-        self.look_saved_timeout = declare(self, "look_saved_timeout_s", 3.0)
+        # the head has to turn first and the detector only runs about 2 Hz, so give it time
+        self.look_saved_timeout = declare(self, "saved_look_s", 6.0)
         self.base_step = math.radians(declare(self, "base_step_deg", 90.0))
         self.max_rot = int(declare(self, "max_base_rotations", 3))
         self.timeout = declare(self, "search_timeout_s", 120.0)
@@ -104,6 +106,11 @@ class HeadSearchNode(Node):
 
         # 2) head sweep, then 3) base rotation + sweep
         self.mem.set_tracking(False)
+        if self.mem.get().get("status") != "NONE":
+            # not at the saved spot: forget it, so one detection anywhere in the sweep counts
+            # (otherwise a moved bottle needs 3 detections, more than one sweep stop gives)
+            self.mem.clear()
+            time.sleep(0.3)
         for k in range(max_rot + 1):
             for row, tilt in enumerate(self.tilts):
                 pans = self.pans if row % 2 == 0 else list(reversed(self.pans))  # snake pattern

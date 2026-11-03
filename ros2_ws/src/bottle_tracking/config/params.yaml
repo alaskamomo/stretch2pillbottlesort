@@ -43,7 +43,7 @@
     max_rate_hz: 5.0
     depth_scale: 0.001
     depth_offset_m: 0.02                  # bottle front surface -> center
-    max_detect_depth_m: 3.0               # ignore look-alikes farther than this from the camera
+    max_detect_depth_m: 4.0               # ignore look-alikes farther than this from the camera
     publish_debug_image: true
     color_topic: /camera/color/image_raw
     depth_topic: /camera/aligned_depth_to_color/image_raw
@@ -51,9 +51,10 @@
 
     # ---- arm + gripper (run: ros2 run bottle_tracking calibrate_arm --ros-args -p write:=true) ----
     grasp_frame: link_grasp_center
-    grasp_lateral_offset_m: 0.30          # measured by calibrate_arm
-    lift_grasp_z_offset_m: 0.0            # measured by calibrate_arm
-    arm_x_offset_m: 0.0                   # measured by calibrate_arm
+    grasp_lateral_offset_m: 0.413         # measured by calibrate_arm
+    lift_grasp_z_offset_m: 0.096          # measured by calibrate_arm
+    wrist_pitch_length_m: 0.16            # measured by calibrate_arm
+    arm_x_offset_m: 0.006                 # measured by calibrate_arm
     ext_max_m: 0.50
     lift_min_m: 0.05
     lift_max_m: 1.08
@@ -75,13 +76,13 @@
     view_cone_deg: 15.0
     min_bottle_height_m: -0.05            # ignore detections below the floor...
     max_bottle_height_m: 1.40             # ...or higher than a table/counter (wall art, shelves)
-    max_bottle_distance_m: 3.0
+    max_bottle_distance_m: 4.0
     max_detect_range_m: 2.5
 
     # ---- head-first search ----
     head_pan_positions: [1.4, 0.7, 0.0, -0.7, -1.4, -2.1, -2.8, -3.5]
     head_tilt_positions: [-0.45, -0.85]
-    dwell_s: 0.8                          # must cover >= moved_confirm_count detector frames
+    dwell_s: 1.2                          # must cover >= moved_confirm_count detector frames
     look_saved_timeout_s: 3.0
     base_step_deg: 90.0
     max_base_rotations: 3
@@ -91,8 +92,8 @@
     standoff_m: 0.50
     reach_min_m: 0.30
     reach_max_m: 0.80
-    max_approach_m: 3.5
-    lift_min_z: 0.05
+    max_approach_m: 4.0
+    lift_min_z: -0.05
     lift_max_z: 1.05
     base_half_width_m: 0.17
     base_swept_radius_m: 0.25

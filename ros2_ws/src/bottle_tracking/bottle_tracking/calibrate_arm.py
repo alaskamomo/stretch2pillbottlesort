@@ -13,6 +13,7 @@ THE ARM AND WRIST WILL MOVE. Clear the space beside the robot (right side) first
 Needs the driver running and the robot homed.
 """
 
+import math
 import os
 import re
 import time
@@ -60,7 +61,16 @@ class CalibrateArm(Node):
             return
         a = self.measure(0.05)
         b = self.measure(0.30)
+        # how far the gripper drops when the wrist tilts down (used for floor grabs)
+        pitch = -0.9
+        ok, msg = self.robot.move_joints({"joint_wrist_pitch": pitch}, 20.0)
+        if not ok:
+            print(f"Wrist tilt failed: {msg}")
+            return
+        c = self.measure(0.30)
+        self.robot.move_joints({"joint_wrist_pitch": 0.0}, 20.0)
         self.robot.move_joints({"wrist_extension": 0.0}, 30.0)
+        pitch_len = (b[2] - c[2]) / math.sin(-pitch)
 
         arm_x = (a[0] + b[0]) / 2
         lateral = (a[1] + b[1]) / 2
@@ -69,12 +79,15 @@ class CalibrateArm(Node):
         print(f"    arm_x_offset_m: {arm_x:.3f}")
         print(f"    grasp_lateral_offset_m: {lateral:.3f}")
         print(f"    lift_grasp_z_offset_m: {z_off:.3f}")
+        print(f"    wrist_pitch_length_m: {pitch_len:.3f}")
+        if pitch_len <= 0:
+            print("  WARNING: the gripper did not drop when the wrist tilted. Don't try floor grabs yet.")
         if abs(a[1] - b[1]) > 0.02 or abs(a[0] - b[0]) > 0.02:
             print("  WARNING: the two measurements disagree by more than 2 cm. Check the wrist is straight.")
 
         if self.write:
             self.write_params({"arm_x_offset_m": arm_x, "grasp_lateral_offset_m": lateral,
-                               "lift_grasp_z_offset_m": z_off})
+                               "lift_grasp_z_offset_m": z_off, "wrist_pitch_length_m": pitch_len})
 
     def write_params(self, values):
         from ament_index_python.packages import get_package_share_directory

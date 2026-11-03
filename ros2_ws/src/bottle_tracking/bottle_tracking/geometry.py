@@ -150,8 +150,8 @@ class ApproachConfig:
     arm_x_offset_m: float = 0.0      # x position of the arm's line of extension in base_link
     reach_min_m: float = 0.30        # gripper -y with arm fully retracted
     reach_max_m: float = 0.80        # gripper -y with arm fully extended
-    max_approach_m: float = 3.5      # refuse to drive farther than this
-    lift_min_z: float = 0.05         # lowest bottle height the lift can grasp
+    max_approach_m: float = 4.0      # refuse to drive farther than this
+    lift_min_z: float = -0.05        # lowest believable bottle height (floor bottles use the pitched wrist)
     lift_max_z: float = 1.05         # highest bottle height the lift can grasp
     base_half_width_m: float = 0.17  # base center to its side
     base_swept_radius_m: float = 0.25  # base center to its farthest corner (rotating in place)
@@ -350,6 +350,10 @@ class ArmConfig:
     preferred_extension_m: float = 0.25    # the approach planner parks the base so the arm needs about this much
     arm_line_tol_m: float = 0.03           # bottle must be this close to the arm line or the base has to move
     reach_margin_m: float = 0.08           # don't park where the arm needs its last 8 cm (re-measuring adds error)
+    # Floor grabs: the straight wrist can't get low enough, so the claw tilts down.
+    floor_pitch_rad: float = -0.9          # wrist pitch for a floor grab (negative = down)
+    wrist_pitch_length_m: float = 0.16     # wrist pitch joint to gripper center, measured by calibrate_arm
+    floor_grasp_min_z_m: float = 0.06      # keep the gripper center at least this high off the floor
 
 
 def approach_config_for_arm(arm, base_cfg=None):
@@ -380,11 +384,18 @@ def plan_arm(bottle_base, arm=None):
 
     off_line = bx - arm.arm_x_offset_m
     ext = lateral - arm.grasp_lateral_offset_m + arm.grasp_depth_m
-    ext_pre = ext - arm.grasp_depth_m - arm.pregrasp_gap_m     # lower the gripper clear of the bottle
     lift_grasp = bz - arm.lift_grasp_z_offset_m
+    pitch = 0.0
+    floor = lift_grasp < arm.lift_min_m      # straight wrist can't get this low: tilt the claw down
+    if floor:
+        pitch = arm.floor_pitch_rad
+        lift_grasp = (max(bz, arm.floor_grasp_min_z_m) - arm.lift_grasp_z_offset_m
+                      + arm.wrist_pitch_length_m * math.sin(-pitch))
+        ext += arm.wrist_pitch_length_m * (1 - math.cos(pitch))   # the tilt pulls the gripper back
+    ext_pre = ext - arm.grasp_depth_m - arm.pregrasp_gap_m     # lower the gripper clear of the bottle
     lift_high = lift_grasp + arm.approach_height_m
     lift_up = lift_grasp + arm.lift_after_grasp_m
-    plan.update(extension_m=ext, lift_grasp_m=lift_grasp, off_arm_line_m=off_line)
+    plan.update(extension_m=ext, lift_grasp_m=lift_grasp, off_arm_line_m=off_line, floor=floor)
 
     if lateral <= 0:
         plan["reason"] = "bottle is on the left side of the base; the arm only reaches to the right"
@@ -404,7 +415,8 @@ def plan_arm(bottle_base, arm=None):
         return plan
 
     plan["steps"] = [
-        {"type": "WRIST", "yaw": 0.0, "pitch": 0.0, "roll": 0.0, "why": "point the gripper straight out"},
+        {"type": "WRIST", "yaw": 0.0, "pitch": pitch, "roll": 0.0,
+         "why": "tilt the claw down for a floor grab" if floor else "point the gripper straight out"},
         {"type": "GRIPPER", "state": "open", "why": "open before reaching"},
         {"type": "LIFT", "to": lift_high, "why": f"gripper {arm.approach_height_m * 100:.0f} cm above grasp height"},
         {"type": "ARM", "to": ext_pre, "why": f"stop {arm.pregrasp_gap_m * 100:.0f} cm before the bottle"},
@@ -435,6 +447,24 @@ def format_arm_plan(plan, start_number=1):
         lines.append(f"Step {i}  {txt} ({s['why']})")
     lines.append(f"Grasp point: {abs(plan['off_arm_line_m']) * 100:.1f} cm off the arm line, "
                  f"arm extension {plan['extension_m']:.2f} m, lift {plan['lift_grasp_m']:.2f} m")
+    return "\n".join(lines)
+
+
+def plan_search(moves=2, step_m=1.0):
+    """What to do when the head can't see the bottle: move up and look again, then look behind.
+    Returns a list of base steps, one per look. Never moves anything."""
+    steps = [{"type": "DRIVE", "m": step_m, "why": "move up, then look around with the head"}
+             for _ in range(moves)]
+    steps.append({"type": "ROTATE", "deg": 180.0, "why": "turn around, then look around with the head"})
+    return steps
+
+
+def format_search_plan(steps):
+    lines = ["SEARCH PLAN (the bottle isn't in view from here)"]
+    for i, s in enumerate(steps, 1):
+        move = f"BASE_DRIVE   {s['m']:+.2f} m" if s["type"] == "DRIVE" else f"BASE_ROTATE  {s['deg']:+.1f} deg"
+        lines.append(f"Step {i}  {move} ({s['why']})")
+    lines.append("Stop as soon as the bottle is seen, then make the pick plan from there.")
     return "\n".join(lines)
 
 

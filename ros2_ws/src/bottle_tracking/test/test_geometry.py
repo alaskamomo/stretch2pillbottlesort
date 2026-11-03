@@ -153,3 +153,29 @@ def test_deep_grasp_still_lowers_clear_of_the_bottle():
     arms = [[s["to"] for s in geo.plan_arm(bottle, a)["steps"] if s["type"] == "ARM"] for a in (shallow, deep)]
     assert arms[0][0] == pytest.approx(arms[1][0])
     assert arms[1][1] == pytest.approx(arms[0][1] + 0.07)
+
+
+def test_floor_bottle_gets_a_tilted_plan():
+    arm = geo.ArmConfig(grasp_lateral_offset_m=0.413, lift_grasp_z_offset_m=0.096)
+    plan = geo.plan_arm((0.0, -0.70, 0.05), arm)
+    assert plan["ok"], plan["reason"]
+    assert plan["floor"] and plan["steps"][0]["pitch"] < 0
+    assert plan["lift_grasp_m"] >= arm.lift_min_m
+
+
+def test_table_bottle_keeps_the_wrist_straight():
+    arm = geo.ArmConfig(grasp_lateral_offset_m=0.413, lift_grasp_z_offset_m=0.096)
+    plan = geo.plan_arm((0.0, -0.70, 0.80), arm)
+    assert plan["ok"] and not plan["floor"] and plan["steps"][0]["pitch"] == 0.0
+
+
+def test_floor_bottle_passes_the_full_plan():
+    arm = geo.ArmConfig(grasp_lateral_offset_m=0.413, lift_grasp_z_offset_m=0.096)
+    full = geo.full_pick_plan((2.0, 0.5, 0.05), (0, 0, 0), arm)
+    assert full["ok"], full["reason"]
+
+
+def test_search_plan_moves_up_then_turns():
+    steps = geo.plan_search(2, 1.0)
+    assert [s["type"] for s in steps] == ["DRIVE", "DRIVE", "ROTATE"]
+    assert "BASE_DRIVE" in geo.format_search_plan(steps)

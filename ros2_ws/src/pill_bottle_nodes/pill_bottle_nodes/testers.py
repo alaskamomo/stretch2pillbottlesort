@@ -485,3 +485,245 @@ def grasp_report():
         n = len(outs)
         print(f"{sq!s:>8} {er!s:>6} {ori!s:>11}  {n:4d}  {outs.count('held'):4d}  {outs.count('slipping'):8d}  "
               f"{outs.count('dropped'):7d}  {outs.count('missed'):6d}")
+
+
+# ---------------- T16: label reading at the head camera ----------------
+
+def _results_logger(repo_testing_dir, test_id, name):
+    """testing/test_logger.TestLogger from the repo (CSV for summarize_results.py), or None if it isn't there."""
+    import sys
+    d = os.path.expanduser(repo_testing_dir)
+    if d not in sys.path:
+        sys.path.insert(0, d)
+    try:
+        from test_logger import TestLogger
+        return TestLogger(test_id, name)
+    except Exception as e:
+        print(f"(not logging to the results CSV: {e}; set -p repo_testing_dir:=/path/to/stretch2pillbottlesort/testing)")
+        return None
+
+
+def _norm(text):
+    import re
+    return re.sub(r"[^A-Z0-9.]", "", str(text or "").upper())
+
+
+def label_matches(fields, expected_drug, expected_strength):
+    """Did the read get the drug and strength right? Ignores spaces, case and punctuation; an expected value
+    left empty isn't checked."""
+    drug, strength = _norm(fields.get("drug_name")), _norm(fields.get("strength"))
+    ok_drug = not expected_drug or (bool(drug) and (_norm(expected_drug) in drug or drug in _norm(expected_drug)))
+    ok_strength = not expected_strength or strength == _norm(expected_strength)
+    return ok_drug and ok_strength
+
+
+LABEL_CONDITIONS = ["label_facing_camera", "label_facing_away", "label_under_fingers", "lying_in_claw", "glare"]
+
+
+def test_label():
+    """T16: read the label with the bottle held at the head camera (verify pose).
+
+    Runs the whole fallback ladder: wrist turns -> lift change -> regrasp -> give up. Each trial is logged to
+    ~/stretch_test_results/T16.csv (summarize_results.py) and ~/pill_tests/label_log.jsonl, and every view's
+    flattened image is saved to ~/pill_tests/label_*.jpg.
+
+      ros2 launch pill_bottle_nodes nodes.launch.py stage:=label        (stage:=full for mode:=grasped)
+      export GEMINI_API_KEY=...                                         (else EasyOCR only)
+      ros2 run pill_bottle_nodes test_label --ros-args -p expected_drug:=FUNKITOL -p expected_strength:=200MG
+
+    mode:=handed (default): you put the bottle in the open claw; the "regrasp" asks you to re-seat it higher.
+                            Tests label reading without depending on the grasp.
+    mode:=grasped:          the robot finds and grabs the bottle itself and regrasps on its own (needs stage:=full).
+    """
+    import json
+
+    from . import grasp
+    from . import label_reading as lr
+    from .geometry import look_at
+    from .label_steps import REGRASP_SETTINGS, LabelSteps, make_regrasp
+
+    c = start("test_label")
+    settings = dict(grasp.GRASP_SETTINGS, **lr.LABEL_SETTINGS, **REGRASP_SETTINGS)
+    extra = {"yes": False, "mode": "handed", "trials": 5, "expected_drug": "", "expected_strength": "",
+             "rotate": "cw", "hold_lift": 0.9, "hold_arm": 0.10,
+             "repo_testing_dir": "~/stretch2pillbottlesort/testing"}
+    for k, v in {**settings, **extra}.items():
+        c.declare_parameter(k, v)
+    s = {k: c.get_parameter(k).value for k in {**settings, **extra}}
+
+    def move(label, **joints):
+        if not s["yes"] and not ask(f"Next: {label} {joints}?"):
+            raise RuntimeError("stopped at your request")
+        ok, msg = c.move(**joints)
+        if not ok:
+            raise RuntimeError(f"{label}: {msg}")
+
+    def hold_up():
+        move("raise to the verify height", joint_lift=s["hold_lift"])
+        move("bring the arm in", wrist_extension=s["hold_arm"])
+        pan, tilt = look_at(c.position("link_head_tilt"), c.position("link_grasp_center"))
+        move("look at the claw", joint_head_pan=pan, joint_head_tilt=tilt)
+
+    try:
+        if not c.wait_joints():
+            print("No /joint_states. Start robot.launch.py first.")
+            return
+        exp_drug = s["expected_drug"] or input("Drug name printed on the test bottle (Enter = don't check): ").strip()
+        exp_strength = s["expected_strength"] or input("Strength on the label, e.g. 200MG (Enter = don't check): ").strip()
+        reader = lr.build_reader(s, print)
+        results = _results_logger(s["repo_testing_dir"], "T16", "Label reading at the head camera")
+        print(f"\nConditions to cover: {', '.join(LABEL_CONDITIONS)}")
+        for trial in range(1, int(s["trials"]) + 1):
+            cond = input(f"\nTrial {trial}/{s['trials']}: condition [{LABEL_CONDITIONS[(trial - 1) % len(LABEL_CONDITIONS)]}]"
+                         " (q = quit): ").strip() or LABEL_CONDITIONS[(trial - 1) % len(LABEL_CONDITIONS)]
+            if cond.lower() == "q":
+                break
+            log = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "trial": trial, "condition": cond, "mode": s["mode"],
+                   "unwarp": s["label_unwarp"]}
+            current, orientation = {"plan": None}, "upright"
+            if s["mode"] == "grasped":
+                st = c.wait_for("state", 8.0)
+                plan = c.plan(st) if st else None
+                if plan is None or plan.next_step != "reach":
+                    print(f"  Can't grasp from here ({plan.message if plan else 'no bottle'}); skipping (not logged).")
+                    continue
+                orientation = st.orientation
+                grasp.approach(c, plan, s, move, print, log)
+                grasp.refine(c, s, move, print, log)
+                outcome = grasp.close_and_check(c, plan, s, move, print, log, tag="_label")
+                if outcome not in ("held", "slipping"):
+                    print(f"  Grasp {outcome}; skipping this trial (not a label result).")
+                    grasp.release(c, plan, s, move)
+                    continue
+                current["plan"] = plan
+                hold_up()
+            else:
+                move("open the claw", gripper_aperture=s["gripper_open"])
+                hold_up()
+                input(f"  Put the bottle in the claw ({cond}), deep in the fingers, then press Enter...")
+                move("close the claw", gripper_aperture=s["gripper_squeeze"])
+                time.sleep(0.5)
+
+            steps = LabelSteps(c, s, move, print, reader, rotate=s["rotate"], tag=f"{time.strftime('%Y%m%d_%H%M%S')}_t{trial}")
+            if s["mode"] == "grasped":
+                regrasp = make_regrasp(c, current, orientation, s, move, print, hold_up, steps, log)
+            else:
+                def regrasp():
+                    move("open the claw", gripper_aperture=s["gripper_open"])
+                    input("  REGRASP: re-seat the bottle about 2-3 cm higher in the claw, then press Enter...")
+                    move("close the claw", gripper_aperture=s["gripper_squeeze"])
+                    time.sleep(0.5)
+                    steps.reset_reference()
+                    return True
+            t0 = time.time()
+            try:
+                res = lr.run_label_sequence(steps.read_view, steps.set_yaw, steps.set_lift, regrasp, s, print)
+                if res["status"] == "regrasp_failed":
+                    outcome = "DROP"
+                elif res["status"] == "unreadable":
+                    outcome = "NOT_FOUND"
+                else:
+                    outcome = "SUCCESS" if label_matches(res["fields"], exp_drug, exp_strength) else "MISS"
+            except RuntimeError as e:
+                if "stopped at your request" in str(e):
+                    raise
+                res, outcome = {"errors": [str(e)], "fields": {}}, "ERROR"
+            dt = time.time() - t0
+            metrics = {k: res.get(k) for k in ("views", "lift_adjusted", "regrasps", "sources")}
+            metrics.update(read_s=round(dt, 1), drug=res["fields"].get("drug_name"),
+                           strength=res["fields"].get("strength"), unwarp=s["label_unwarp"])
+            print(f"  -> {outcome}: {res['fields']}  {metrics}")
+            if res.get("errors"):
+                print(f"     errors: {res['errors']}")
+            log.update(outcome=outcome, result=res)
+            os.makedirs(OUT, exist_ok=True)
+            with open(os.path.join(OUT, "label_log.jsonl"), "a") as f:
+                f.write(json.dumps(log, default=str) + "\n")
+            if results:
+                results.log(outcome, cond, metrics, notes="; ".join(res.get("errors") or []), duration_s=dt)
+            if s["mode"] == "grasped" and outcome != "DROP":
+                grasp.place(c, current["plan"], s, move)
+            elif s["mode"] != "grasped":
+                move("open the claw", gripper_aperture=s["gripper_open"])
+                input("  Take the bottle out of the claw, then press Enter...")
+        print("\nSummary: python3 testing/summarize_results.py --session latest   (T16)")
+    except RuntimeError as e:
+        print(f"Stopped: {e}")
+    finally:
+        c.close()
+        rclpy.try_shutdown()
+
+
+# ---------------- T17: orientation (depth fit vs vision model vs combined) ----------------
+
+def test_orientation():
+    """T17: is the bottle upright or lying? Compares the depth fit, the vision model and the combined answer.
+
+      ros2 launch pill_bottle_nodes nodes.launch.py stage:=orientation orientation_model:=/path/orientation_cls.pt
+      ros2 run pill_bottle_nodes test_orientation
+
+    Each trial: you place the bottle and type how it really is (u / l / t); it watches 10 frames.
+    SUCCESS = the combined orientation (what the grasp planner gets) matches. Logged to T17.csv.
+    """
+    import json
+    from collections import Counter
+
+    from .orientation import depth_label
+
+    c = start("test_orientation")
+    params = {"trials": 10, "frames": 10, "upright_max_deg": 30.0, "lying_min_deg": 60.0,
+              "repo_testing_dir": "~/stretch2pillbottlesort/testing"}
+    for k, v in params.items():
+        c.declare_parameter(k, v)
+    p = {k: c.get_parameter(k).value for k in params}
+    truth_names = {"u": "upright", "l": "lying", "t": "tilted"}
+    results = _results_logger(p["repo_testing_dir"], "T17", "Orientation: depth vs vision vs combined")
+    tally = {"depth": [0, 0], "vision": [0, 0], "combined": [0, 0]}
+    try:
+        for trial in range(1, int(p["trials"]) + 1):
+            a = input(f"\nTrial {trial}: place the bottle, then type how it really is "
+                      "(u = upright, l = lying/knocked over, t = tilted, q = quit): ").strip().lower()
+            if a.startswith("q"):
+                break
+            truth = truth_names.get(a[:1])
+            if truth is None:
+                print("  type u, l or t")
+                continue
+            depth_votes, fused_votes, vision_votes, confs, pts = [], [], [], [], []
+            for _ in range(int(p["frames"])):
+                st = c.wait_for("state", 3.0)
+                if st is None:
+                    continue
+                depth_votes.append(depth_label(st.axis_tilt_deg, p["upright_max_deg"], p["lying_min_deg"]))
+                fused_votes.append(st.orientation)
+                pts.append(st.num_points)
+                vm = c.wait_for("orientation_vision", 0.6, newer_than=time.time() - 1.0)
+                if vm is not None:
+                    v = json.loads(vm.data)
+                    vision_votes.append(v.get("label"))
+                    confs.append(v.get("conf", 0.0))
+            if not fused_votes:
+                print("  NOT_FOUND: no /pill_bottle/state. Is the bottle in view (test_detector, test_distance)?")
+                if results:
+                    results.log("NOT_FOUND", truth, {})
+                continue
+            maj = lambda votes: Counter(votes).most_common(1)[0][0] if votes else None
+            got = {"depth": maj(depth_votes), "vision": maj(vision_votes), "combined": maj(fused_votes)}
+            for k, v in got.items():
+                if v is not None:
+                    tally[k][0] += v == truth
+                    tally[k][1] += 1
+            outcome = "SUCCESS" if got["combined"] == truth else "MISS"
+            metrics = {"predicted_orientation": got["combined"], "depth": got["depth"], "vision": got["vision"],
+                       "confidence": round(statistics.mean(confs), 3) if confs else None,
+                       "depth_points": int(statistics.mean(pts)), "frames": len(fused_votes)}
+            print(f"  truth {truth}: depth {got['depth']}, vision {got['vision']}, combined {got['combined']} -> {outcome}")
+            if results:
+                results.log(outcome, truth, metrics)
+        print("\nAccuracy so far (this session):")
+        for k, (right, n) in tally.items():
+            print(f"  {k:8s} {right}/{n}" + (f"  ({100 * right / n:.0f}%)" if n else ""))
+        print("If vision beats depth on lying/elevated bottles, the combined answer should follow it there.")
+    finally:
+        c.close()
+        rclpy.try_shutdown()

@@ -123,6 +123,8 @@ PLANNER_SETTINGS = {
     "grasp_depth": 0.05,
     # base moves
     "front_band": 0.15, "drive_tol": 0.02, "max_drive": 0.5,
+    # lying bottles that need lining up: drive to the spot beside them instead of turning in place (T19)
+    "lying_spot_tol": 0.08, "face_tol_deg": 5.0,
 }
 
 
@@ -140,6 +142,12 @@ def grasp_center_at_yaw0(wrist, grasp):
     return (wrist[0], wrist[1] - reach, grasp[2])
 
 
+def _axis_off_arm(axis_yaw):
+    """Angle between a lying bottle's axis and the arm line (base y), 0 to pi/2 (an axis has no front/back)."""
+    off = abs(wrap(axis_yaw - math.pi / 2)) % math.pi
+    return min(off, math.pi - off)
+
+
 def plan_grasp(bottle, orientation, surface_z, axis_yaw, ext, lift, g0, p):
     """Decide the next move toward the bottle.
 
@@ -151,6 +159,39 @@ def plan_grasp(bottle, orientation, surface_z, axis_yaw, ext, lift, g0, p):
     out = dict(success=True, next_step="reach", base_rotate=0.0, base_translate=0.0, lift_clear=0.0,
                lift=0.0, arm_pregrasp=0.0, arm_grasp=0.0, wrist_yaw=0.0, grasp_depth=0.0, message="")
     side_dist = abs(g0[1]) + p["arm_mid"]      # how far to the side a bottle should be for a mid-length reach
+
+    # 0) Lying bottle not ready to grab (not lined up with the arm, or not on the arm's side within reach): the
+    #    claw must close across it, so the bottle's axis has to run along the arm. Turning in place to line it up swings the bottle off the arm line (the arm is to the side
+    #    of the base), so instead go to the spot beside the bottle where both are true: turn toward that spot,
+    #    drive there, then turn so the arm faces the bottle.
+    arm_now = ext + (g0[1] - by) + p["grasp_depth"]
+    lying_ready = (_axis_off_arm(axis_yaw) <= math.radians(p["lying_align_deg"]) and by < -p["front_band"]
+                   and p["arm_min_grasp"] <= arm_now - p["grasp_depth"] and arm_now <= p["arm_max"])
+    if orientation == "lying" and not lying_ready:
+        best = None
+        for a in (axis_yaw, axis_yaw + math.pi):           # the arm can point along the bottle either way
+            ux, uy = math.cos(a), math.sin(a)
+            spot = (bx - ux * side_dist, by - uy * side_dist)
+            heading = wrap(a + math.pi / 2)                # base +x when the arm (-y) points along u
+            cost = math.hypot(*spot)                       # distance only: the same choice after every turn
+            if best is None or cost < best[0]:
+                best = (cost, spot, heading)
+        _, spot, heading = best
+        dist = math.hypot(*spot)
+        if dist > p.get("lying_spot_tol", 0.08):
+            face = math.atan2(spot[1], spot[0])
+            if abs(face) > math.radians(p.get("face_tol_deg", 5.0)):
+                out.update(next_step="rotate_base", base_rotate=face,
+                           message=(f"Lying bottle isn't lined up with the arm; turning {math.degrees(face):+.0f} deg "
+                                    f"toward the spot beside it ({dist:.2f} m away)."))
+                return out
+            d = min(dist, p["max_drive"])
+            out.update(next_step="drive_base", base_translate=d,
+                       message=f"Driving {d:+.2f} m to the spot beside the lying bottle.")
+            return out
+        out.update(next_step="rotate_base", base_rotate=heading,
+                   message=f"Beside the lying bottle; turning {math.degrees(heading):+.0f} deg so it runs along the arm.")
+        return out
 
     # 1) In front of the robot: drive until it's at the right distance, then turn so the arm faces it.
     if bx > 0 and abs(by) < p["front_band"]:
@@ -179,17 +220,7 @@ def plan_grasp(bottle, orientation, surface_z, axis_yaw, ext, lift, g0, p):
                             "turning to face the bottle so the base can drive."))
         return out
 
-    # 4) Lying bottle: the fingers must close across it, so its axis should run along y.
-    if orientation == "lying":
-        turn = wrap(axis_yaw - math.pi / 2)
-        if turn > math.pi / 2:
-            turn -= math.pi
-        if turn < -math.pi / 2:
-            turn += math.pi
-        if abs(turn) > math.radians(p["lying_align_deg"]):
-            out.update(next_step="rotate_base", base_rotate=turn,
-                       message=f"Lying bottle points the wrong way; turning {math.degrees(turn):+.0f} deg to line up.")
-            return out
+    # 4) (lying bottles are lined up in step 0)
 
     # 5) Grasp height.
     if orientation == "upright":

@@ -105,7 +105,9 @@ def test_plan_turns_when_bottle_on_left():
 def test_plan_lines_up_lying_bottle():
     g0 = (0.0, -0.6, 0.3)
     r = plan_grasp((0.0, -0.9, 0.02), "lying", 0.0, 0.0, ext=0.1, lift=0.4, g0=g0, p=P)   # axis along x
-    assert r["next_step"] == "rotate_base" and abs(abs(r["base_rotate"]) - math.pi / 2) < 1e-6
+    # not turned in place any more (that swung the bottle off the arm line and looped, T19): it heads for the
+    # spot beside the bottle where the bottle runs along the arm
+    assert r["next_step"] in ("rotate_base", "drive_base") and "spot beside" in r["message"]
     ok = plan_grasp((0.0, -0.9, 0.02), "lying", 0.0, math.pi / 2, ext=0.1, lift=0.4, g0=g0, p=P)
     assert ok["next_step"] == "reach"
 

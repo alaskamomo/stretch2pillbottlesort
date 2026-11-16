@@ -2,7 +2,9 @@
 
 ```
 testing/                         logging + summary + manual tester + bottle watcher (plain Python)
-docs/github_tickets.txt          current tickets (T0, T1a, T1b, T2, T3a-T3d, T4, T9, T10, T11)
+docs/github_tickets.txt          older tickets (T0, T1a, T1b, T2, T3a-T3d, T4)
+docs/tickets/                    current tickets, short format: T3, T6-T13, T15-T19 (paste into GitHub issues)
+training/                        Colab notebook for the orientation model (T17)
 ros2_ws/src/bottle_tracking/     ROS 2 package
   bottle_tracking/
     yolo_detector_node.py        YOUR trained YOLOv8 model on the head camera -> /pill_bottle/detection
@@ -82,7 +84,13 @@ The arm and wrist will move, so clear the right side of the robot first. This sa
 | T3b watch while moving | `ros2 run bottle_tracking t3b_tracking_tester --ros-args --params-file $P -p trials:=3` |
 | T3c remember after moving | `ros2 run bottle_tracking t3c_remember_tester --ros-args --params-file $P -p trials:=3` |
 | T3d move if approved, then grip | `ros2 run bottle_tracking t3d_grip_tester --ros-args --params-file $P -p trials:=3` |
-| T4, T9, T10, T11 | `python3 testing/run_manual_test.py T9` |
+| T16 label reading | `ros2 run pill_bottle_nodes test_label` (stage:=label) |
+| T17 orientation | `ros2 run pill_bottle_nodes test_orientation` (stage:=orientation) |
+| T6 detection range | `ros2 run pill_bottle_nodes test_range` (stage:=range); live view: `live_view` |
+| T11 / T12 / T13 / T18 | `test_bin_detection` / `test_bin_drop` / `test_obstacles` / `test_world` (pill_bottle_nodes) |
+| T19a / T19b | `t19a_orientation_plan` (stage:=arm) / `t19b_orientation_grasp` (stage:=full) |
+| T15 full run | `ros2 run pill_bottle_nodes demo_run` (stage:=full, lidar on) |
+| T4, T7, T9, T10 (by hand) | `python3 testing/run_manual_test.py T7` (any test ID) |
 | Results | `python3 testing/summarize_results.py --session latest` (add `--markdown` for GitHub) |
 
 Change the pause between trials with `-p pause_s:=30`.

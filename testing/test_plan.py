@@ -1,8 +1,9 @@
 """
 test_plan.py - every component test from the GitHub tickets, in one place.
 
-T1a, T1b, T2 and T3a-T3d have automatic ROS testers (listed under "auto").
-run_manual_test.py walks you through the others (T4, T9, T10, T11) trial by trial.
+T1a, T1b, T2, T3a-T3d, T6, T11-T13, T15-T18, T19a/b have automatic ROS testers (listed under "auto").
+run_manual_test.py walks you through the others trial by trial (T4, T7, T9, T10).
+T8 (claw vs head camera) is closed: the head camera was chosen and label reading is T16.
 Edit conditions / trials / metrics here when the plan changes.
 """
 
@@ -87,31 +88,144 @@ TESTS = {
         "outcomes": ["SUCCESS", "MISS", "TIMEOUT", "ERROR"],
         "metrics": ["recovery_time_s", "gripper_closed"],
     },
-    "T9": {
-        "name": "Bottle orientation classification",
-        "setup": "Log the TRUE orientation as the condition.",
-        "conditions": ["upright", "lying_down"],
-        "trials": 5,
-        "success": "Predicted orientation matches true orientation.",
+    "T6": {
+        "name": "Detection range: how far away it sees the bottle (YOLO 640 vs 1280)",
+        "auto": "ros2 run pill_bottle_nodes test_range   (stage:=range; live view: ros2 run pill_bottle_nodes live_view)",
+        "setup": "Tape marks straight out from the base at 1, 1.5, ... 4 m. The tester logs each mark and YOLO size "
+                 "as condition <height>_<distance>m_imgsz<size>.",
+        "conditions": ["floor", "table", "raised"],
+        "trials": 7,
+        "success": "Seen in >= 80 % of frames AND distance within 3 cm of the tape (5 cm past 2.5 m).",
         "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "ERROR"],
-        "metrics": ["predicted_orientation", "confidence"],
+        "metrics": ["seen", "frames", "conf", "box_px", "depth_px", "est_m", "true_m", "error_cm", "fps", "reasons"],
+    },
+    "T7": {
+        "name": "Starting positions and replanning",
+        "setup": "Start the robot from a marked spot (log it as the condition). For 'moved_mid_drive', "
+                 "move the bottle >10 cm while it drives; for 'removed_mid_drive', take it away.",
+        "conditions": ["front", "side", "far_corner", "facing_away", "moved_mid_drive", "removed_mid_drive"],
+        "trials": 5,
+        "success": "Arm ends lined up within 3 cm; replans after a move; searches (doesn't drive to the old spot) "
+                   "when the bottle is gone.",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "NO_PLAN", "COLLISION", "ERROR"],
+        "metrics": ["start_spot", "replans", "final_off_arm_line_cm", "total_time_s"],
+    },
+    "T9": {
+        "name": "Integration: find, drive, reach, grip, lift, verify, put back (with retries)",
+        "auto": "ros2 run pill_bottle_nodes task_manager   (stage:=full; -p read_label:=false for this test)",
+        "setup": "One full run per trial. 'grab_fails_once' / 'grab_fails_every_time': take the bottle away "
+                 "during the grasp. 'empty_claw_verify': let it close on nothing (verification must fail).",
+        "conditions": ["normal", "grab_fails_once", "grab_fails_every_time", "empty_claw_verify"],
+        "trials": 5,
+        "success": "Normal: completes with no collision. Failed grab: re-detects and retries, max 4 attempts, "
+                   "then reports and stows. Empty claw: verification fails.",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "NO_PLAN", "COLLISION", "DROP", "FALSE_POSITIVE", "TIMEOUT",
+                     "ERROR"],
+        "metrics": ["failed_stage", "stage_times_s", "attempts", "grip_effort", "verify_time_s"],
     },
     "T10": {
-        "name": "In-hand verification at the head camera",
-        "setup": "Part A bottle in gripper, Part B empty gripper.",
-        "conditions": ["A_bottle_in_gripper", "B_empty_gripper"],
-        "trials": 5,
-        "success": "A: confirms pill_bottle in <=5 s. B: verification correctly fails.",
-        "outcomes": ["SUCCESS", "MISS", "FALSE_POSITIVE", "TIMEOUT", "ERROR"],
-        "metrics": ["verify_time_s", "confidence"],
+        "name": "Run recorder (video of runs)",
+        "setup": "Record a test run. Optional: film it with a phone from the side, then add it with add_footage.",
+        "conditions": ["robot_only", "with_outside_footage"],
+        "trials": 3,
+        "success": "Video plays, length matches the run, file name matches the CSV row, overlay and map shown; "
+                   "outside footage in sync within 0.2 s.",
+        "outcomes": ["SUCCESS", "MISS", "ERROR"],
+        "metrics": ["video_s", "run_s", "fps", "sync_error_s"],
     },
     "T11": {
-        "name": "Retry and failure handling",
-        "setup": "Take the bottle away during the grasp to force a failed grab.",
-        "conditions": ["fail_once_then_succeed", "fail_every_time"],
-        "trials": 3,
-        "success": "Re-detects before each retry, max 3 retries (4 attempts), then reports, stows, stops.",
-        "outcomes": ["SUCCESS", "MISS", "TIMEOUT", "ERROR"],
-        "metrics": ["attempts", "final_state"],
+        "name": "Bin detection (YOLO bin class)",
+        "auto": "ros2 run pill_bottle_nodes test_bin_detection   (stage:=bin)",
+        "setup": "Bin at the distance in the condition, head looking at it. Count 10 frames.",
+        "conditions": ["0.5m", "1m", "1.5m", "2m", "no_bin_in_view"],
+        "trials": 5,
+        "success": "Bin found in 9 of 10 frames; never labeled as a pill bottle; nothing found when no bin.",
+        "outcomes": ["SUCCESS", "MISS", "FALSE_POSITIVE", "ERROR"],
+        "metrics": ["frames_found", "confidence", "distance_m"],
+    },
+    "T12": {
+        "name": "Search for and drive to the bin, drop the bottle in",
+        "auto": "ros2 run pill_bottle_nodes test_bin_drop   (robot.launch lidar:=true, stage:=full)",
+        "setup": "Robot holding a bottle. 'remembered' = second bottle, bin already found once.",
+        "conditions": ["bin_in_view", "bin_behind", "remembered"],
+        "trials": 5,
+        "success": "Bottle ends up in the bin, no collision; 'remembered' skips the full search.",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "COLLISION", "DROP", "ERROR"],
+        "metrics": ["search_time_s", "bin_distance_m", "drop_result"],
+    },
+    "T13": {
+        "name": "Navigate around obstacles",
+        "auto": "ros2 run pill_bottle_nodes test_obstacles   (robot.launch lidar:=true, stage:=full)",
+        "setup": "Put an obstacle between the robot and the target (bottle or bin).",
+        "conditions": ["no_obstacle", "one_obstacle", "two_obstacles", "no_way_around"],
+        "trials": 5,
+        "success": "Reaches the target around the obstacle(s) with zero collisions; 'no_way_around' stops safely "
+                   "and says so.",
+        "outcomes": ["SUCCESS", "MISS", "NO_PLAN", "COLLISION", "TIMEOUT", "ERROR"],
+        "metrics": ["obstacles_seen", "detour_m", "replans", "collisions"],
+    },
+    "T15": {
+        "name": "Full demo run",
+        "auto": "ros2 run pill_bottle_nodes demo_run   (robot.launch lidar:=true, stage:=full)",
+        "setup": "Tell it how many bottles are out. It looks around, collects every bottle into the bin, "
+                 "reads labels, checks the bin count, prints the report.",
+        "conditions": ["3_bottles_open_floor", "3_bottles_with_obstacle", "mixed_orientations"],
+        "trials": 5,
+        "success": "All bottles in the bin, stops on its own, report matches what happened.",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "COLLISION", "DROP", "TIMEOUT", "ERROR"],
+        "metrics": ["bottles_expected", "bottles_found", "bottles_binned", "labels_read",
+                    "total_time_s"],
+    },
+    "T16": {
+        "name": "Read the label at the head camera (wrist turns, lift change, regrasp, give up)",
+        "auto": "ros2 run pill_bottle_nodes test_label   (stage:=label; mode:=grasped needs stage:=full)",
+        "setup": "Bottle held at the verify pose. Type the drug name and strength printed on it once.",
+        "conditions": ["label_facing_camera", "label_facing_away", "label_under_fingers", "lying_in_claw", "glare"],
+        "trials": 5,
+        "success": "Drug name AND strength match the bottle; or UNREADABLE reported (never a wrong answer).",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "DROP", "ERROR"],
+        "metrics": ["views", "lift_adjusted", "regrasps", "sources", "read_s", "drug", "strength", "unwarp"],
+    },
+    "T17": {
+        "name": "Orientation: depth fit vs vision model vs combined",
+        "auto": "ros2 run pill_bottle_nodes test_orientation   (stage:=orientation orientation_model:=...)",
+        "setup": "Log the TRUE orientation as the condition. Include elevated and far-away spots.",
+        "conditions": ["upright", "lying", "tilted"],
+        "trials": 10,
+        "success": "Combined (depth + vision) orientation matches the true orientation.",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "ERROR"],
+        "metrics": ["predicted_orientation", "depth", "vision", "confidence", "depth_points"],
+    },
+    "T18": {
+        "name": "Remember bottles, bin and obstacles (object memory + obstacle integration)",
+        "auto": "ros2 run pill_bottle_nodes test_world   (robot.launch lidar:=true, stage:=full)",
+        "setup": "3 bottles + bin + 1 obstacle placed in the room; log the setup as the condition.",
+        "conditions": ["look_around", "after_drive_2m_turn_180", "bottle_behind_obstacle", "no_way_around"],
+        "trials": 5,
+        "success": "Saves 3 bottles + bin with no duplicates within 10 cm; still within 10 cm after driving; "
+                   "detours around the obstacle with zero collisions; marks an unreachable bottle 'blocked'.",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "NO_PLAN", "COLLISION", "ERROR"],
+        "metrics": ["bottles_saved", "duplicates", "max_position_error_cm", "detour_m", "collisions"],
+    },
+    "T19a": {
+        "name": "Orientation-aware grasp: plan only (no base/arm motion)",
+        "auto": "ros2 run pill_bottle_nodes t19a_orientation_plan   (stage:=arm)",
+        "setup": "Place the bottle as the condition says. Head-only search; it prints the orientation and the grip plan.",
+        "conditions": ['upright_floor', 'upright_table', 'upright_raised', 'lying_toward', 'lying_across', 'lying_away', 'tilted'],
+        "trials": 5,
+        "success": "Orientation matches the real one AND the plan fits it (upright: low side grab; lying: base "
+                   "turned so the bottle points along the arm; tilted: center height; out of reach: drive/report).",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "NO_PLAN", "ERROR"],
+        "metrics": ["seen_orientation", "plan_type", "grip_height_m", "base_turn_deg"],
+    },
+    "T19b": {
+        "name": "Orientation-aware grasp: plan, then carry it out",
+        "auto": "ros2 run pill_bottle_nodes t19b_orientation_grasp   (stage:=full)",
+        "setup": "Same as T19a, then approve the moves; it grabs, lifts, holds 5 s, puts it back.",
+        "conditions": ['upright_floor', 'upright_table', 'upright_raised', 'lying_toward', 'lying_across', 'lying_away', 'tilted'],
+        "trials": 5,
+        "success": "Held deep in the claw for 5 s, no collision (upright 4/5, lying 3/5, tilted 3/5).",
+        "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "NO_PLAN", "COLLISION", "DROP", "ERROR"],
+        "metrics": ["seen_orientation", "plan_type", "attempts", "grip_effort"],
     },
 }

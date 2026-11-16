@@ -69,6 +69,15 @@ component at fault. There is one tester per node, plus two for the grasp.
 | `test_base` | base moves | `base` | base | 60° turn within ±5°, 0.20 m drive within ±3 cm |
 | `test_grasp` | the grasp | `grasp` | arm | Result is HELD; logged to `~/pill_tests/grasp_log.jsonl` |
 | `test_task` | `task_manager` | `full` | no | Finds the bottle and prints a reach plan (dry run) |
+| `test_orientation` | `orientation_classifier` + localizer (T17) | `orientation` | no | Combined orientation matches the real one in 9 of 10 |
+| `test_label` | label reading (T16) | `label` (`full` for `mode:=grasped`) | wrist, lift | Drug + strength right, or UNREADABLE (never wrong) |
+| `test_range` / `live_view` | detection range, YOLO 640 vs 1280 (T6) | `range` | head | Prints the max reliable distance per height |
+| `test_bin_detection` | bin class in the detector (T11) | `bin` | head | Bin in 9 of 10 frames, never called a bottle |
+| `test_bin_drop` | find the bin, drive there, drop (T12) | `full` + lidar | base, arm | Bottle in the bin, no collision |
+| `test_obstacles` | drive around obstacles (T13) | `full` + lidar | base | Arrives, no collision; "no way" when boxed in |
+| `test_world` | remember bottles, bin, obstacles (T18) | `full` + lidar | base | No duplicates, spots within 10 cm |
+| `t19a_orientation_plan` / `t19b_orientation_grasp` | grip plan per orientation (T19) | `arm` / `full` | head / base, arm | Plan fits the orientation; HELD |
+| `demo_run` | the full run (T15) | `full` + lidar | everything | All bottles in the bin + report |
 
 ## Fixing the gripper (this week)
 
@@ -109,6 +118,32 @@ Add `--ros-args -p dry_run:=true` to find and plan without moving.
 
 To see what the cameras see: `ros2 run rqt_image_view rqt_image_view /pill_bottle/debug_image`
 (or `/pill_bottle/gripper_debug_image`).
+
+## Label reading (T16) and orientation model (T17)
+
+Tickets with the state machine and test plans: `docs/tickets/T16_label_reading.md`, `docs/tickets/T17_orientation_model.md`.
+
+```bash
+pip3 install google-genai easyocr "numpy<2"         # then check numpy is still 1.x
+echo 'export GEMINI_API_KEY=...' >> ~/.bashrc         # never commit the key; without it EasyOCR is used
+```
+
+- `task_manager` reads the label after verifying (`-p read_label:=false` to skip). It turns the wrist, then moves the
+  lift, then regrasps once, then reports UNREADABLE. It never guesses. Each view's flattened image is saved to
+  `~/pill_tests/label_*.jpg`.
+- Check saved pictures without the robot:
+  `python3 -m pill_bottle_nodes.label_reading ~/pill_tests/label_*.jpg --compare --expected-drug X --expected-strength 200MG`
+- Orientation model: train with `training/orientation_classifier_colab.ipynb`, then add
+  `orientation_model:=/path/orientation_cls.pt` to any `nodes.launch.py` stage that runs the localizer.
+
+## Full run, obstacles and range (T6, T11–T13, T15, T18, T19)
+
+- `robot.launch.py` now also starts the lidar (`/scan`, `lidar:=false` to skip) and publishes odom -> base_link.
+- The mission logic (look around, remember, drive around obstacles, fetch, drop, report) is in `mission.py` and
+  `world.py` with no ROS in them; `world_robot.py` connects it to the robot. `pytest test/` runs the same code
+  in a simulated room (`test_world.py`), including 100 random rooms.
+- Every run/trial saves a JSON list and a map picture in `~/pill_tests/`; `demo_run` saves `report.txt` too.
+- Testers that move the base ask before every move (`-p confirm:=false` to stop asking). Hand on the runstop.
 
 ## Settings worth knowing
 

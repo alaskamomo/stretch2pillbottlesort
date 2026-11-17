@@ -39,6 +39,7 @@
     model_path: "/home/hello-robot/pill_bottle_robot/final_pill_bottle.pt"
     class_name: pill_bottle
     conf_threshold: 0.5                   # T6 (test_range) prints what to set this to for far bottles
+    report_conf: 0.10                     # boxes down to this are still reported (yellow, T2 'possible')
     imgsz: 640                            # YOLO input size; 1280 sees about twice as far but runs slower (T6)
     rotate_image: cw                      # cw if you trained on upright images, none if on raw sideways ones
     max_rate_hz: 5.0
@@ -88,6 +89,7 @@
     base_step_deg: 90.0
     max_base_rotations: 3
     search_timeout_s: 120.0
+    stream_port: 8080                     # T2 live camera link (0 = off)
 
     # ---- approach planner (standoff/reach are set from the arm numbers above) ----
     standoff_m: 0.50

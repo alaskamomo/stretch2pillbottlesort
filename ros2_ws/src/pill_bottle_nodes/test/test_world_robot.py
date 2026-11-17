@@ -291,3 +291,81 @@ def test_reacquire_picks_the_bottle_at_the_saved_spot_not_the_most_confident(mon
     assert st is not None and st.xyz[1] == pytest.approx(-0.3, abs=0.03) and st.orientation == "upright"
     assert st.num_points > 30 and "axis_yaw" in st.__dict__
     assert io.reacquire((0.5, 1.5, 0.0)) is None                        # nothing there
+
+
+def test_t6_runs_without_questions(monkeypatch, tmp_path, capsys):
+    """T6 with a fake camera and keyboard: live lines, Enter records two spots (distance measured), q finishes."""
+    import queue
+    import pill_bottle_nodes.testers_world as tw
+    from pill_bottle_nodes.range_test import RANGE_SETTINGS
+    spots = [[(1.2, -0.3, 0.02, 0.83)], [(2.6, 0.4, 0.75, 0.21)]]   # spot 2: far + raised + low confidence
+    calls = {"640": 0}
+
+    class FakeView:
+        def __init__(self, tm):
+            self.last_view = np.zeros((64, 36, 3), np.uint8)
+
+        def link(self):
+            return "http://10.0.11.20:8080"
+
+        def analyze(self, size):
+            if size == 640:                                           # only recording uses 640
+                calls["640"] += 1
+            spot = spots[min(max(0, calls["640"] - 1) // RANGE_SETTINGS["frames"], len(spots) - 1)]
+            boxes = [dict(conf=c, xyz=(x, y, z), dist=math.hypot(x, y), depth_px=40, w=10, h=20)
+                     for x, y, z, c in spot if not (size == 640 and x > 2)]   # 640 misses the far bottle
+            return {"size": size, "boxes": boxes, "ms": 100.0}
+
+    keys = queue.Queue()
+    for c in ("", "", "q"):
+        keys.put((math.inf, c))
+    p = dict(RANGE_SETTINGS, live_size=1280, print_s=0.0, stream_port=0, repo_testing_dir="")
+    tm = SimpleNamespace(p=p, c=SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(tw, "make_tm", lambda name, extra: tm)
+    monkeypatch.setattr(tw, "RangeView", FakeView)
+    monkeypatch.setattr(tw, "_keyboard", lambda: keys)
+    monkeypatch.setattr(tw, "_results_logger", lambda *a: None)
+    monkeypatch.setattr(tw, "OUT", str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("T6 asked a question"))
+    tw.test_range()
+    out = capsys.readouterr().out
+    assert "Live camera: http://10.0.11.20:8080" in out
+    assert "pill bottle 1/1 detected at x=1.20 y=-0.30 z=0.02 m" in out
+    assert "Spot 1: 1.24 m, height floor" in out
+    assert "Spot 2: 2.63 m, height table" in out and "misses: {'low conf': 10}" in out
+    assert "Max reliable distance [floor]: 640 -> 1.24 m   1280 -> 1.24 m" in out
+    assert "Max reliable distance [table]: 640 -> none m   1280 -> none m" in out
+    assert len(list(tmp_path.glob("T6_spot*.jpg"))) == 2 and len(list(tmp_path.glob("T6_range_*.json"))) == 1
+
+
+def test_t6_q_typed_while_recording_still_stops(monkeypatch, tmp_path):
+    import queue
+    import time as _t
+    import pill_bottle_nodes.testers_world as tw
+    from pill_bottle_nodes.range_test import RANGE_SETTINGS
+    keys = queue.Queue()
+    keys.put((math.inf, ""))
+    keys.put((_t.time(), ""))        # extra Enter during recording: ignored
+    keys.put((_t.time(), "q"))       # q during recording: still stops
+
+    class FakeView:
+        last_view = None
+
+        def __init__(self, tm):
+            pass
+
+        def link(self):
+            return ""
+
+        def analyze(self, size):
+            return {"size": size, "boxes": [], "ms": 50.0}
+
+    p = dict(RANGE_SETTINGS, live_size=1280, print_s=0.0, stream_port=0, repo_testing_dir="", frames=2)
+    tm = SimpleNamespace(p=p, c=SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(tw, "make_tm", lambda name, extra: tm)
+    monkeypatch.setattr(tw, "RangeView", FakeView)
+    monkeypatch.setattr(tw, "_keyboard", lambda: keys)
+    monkeypatch.setattr(tw, "_results_logger", lambda *a: None)
+    monkeypatch.setattr(tw, "OUT", str(tmp_path))
+    tw.test_range()                  # returns (would hang forever if q were lost)
+    assert len(list(tmp_path.glob("T6_range_*.json"))) == 1

@@ -10,12 +10,12 @@ import time
 import rclpy
 
 from . import grasp
-from .geometry import PLANNER_SETTINGS, box_points, box_rotated_to_raw, grasp_center_at_yaw0, look_at, rotate_image
+from .geometry import PLANNER_SETTINGS, box_points, box_rotated_to_raw, grasp_center_at_yaw0, rotate_image
 from .mission import MISSION_SETTINGS, Mission
 from .orientation import label_from_class
 from .orientation_grasp import check_plan, describe, grip_height, plan_sequence
-from .range_test import (RANGE_SETTINGS, expected_box_px, max_reliable, orientation_guess, suggestions,
-                         summarize_spot)
+from .range_test import (RANGE_SETTINGS, detection_lines, expected_box_px, height_bucket, max_reliable,
+                         orientation_guess, spot_distance, spot_height, suggestions, summarize_spot)
 from .testers import _results_logger
 from .world import (WORLD_SETTINGS, WorldMemory, plan_path, report_lines, stand_spot, to_robot)
 from .world_robot import ROBOT_WORLD_SETTINGS, RosIO
@@ -97,6 +97,17 @@ class RangeView:
             self.omodel = YOLO(os.path.expanduser(self.p["orientation_model"]))
         self.pub = self.c.create_publisher(Image, "/pill_bottle/range_view", 1)
         self.last_view = None
+        self.stream = None
+        if int(self.p.get("stream_port", 0)) > 0:
+            try:
+                from .web_stream import WebStream
+                self.stream = WebStream(int(self.p["stream_port"]),
+                                        "Head camera: green = used, yellow = low confidence, red = rejected")
+            except Exception as e:
+                print(f"(no live link: {e})")
+
+    def link(self):
+        return self.stream.url if self.stream is not None else "(off: -p stream_port:=8080)"
 
     def analyze(self, size):
         import cv2
@@ -170,50 +181,71 @@ class RangeView:
                         (6, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 160, 0), 1, cv2.LINE_AA)
         self.last_view = view
         self.pub.publish(numpy_to_image(view, msg.header.stamp, msg.header.frame_id))
+        if self.stream is not None:
+            self.stream.update(view)
         return {"size": int(size), "boxes": bottles, "ms": ms}
 
 
 RANGE_EXTRA = dict(RANGE_SETTINGS, model_path="~/pill_bottle_robot/final_pill_bottle.pt", orientation_model="",
-                   line_pan=0.0, bottle_class="pill_bottle", bin_class="bin",
-                   heights=["floor:0.0", "table:0.75", "raised:1.0"], live_size=1280, **COMMON)
+                   bottle_class="pill_bottle", bin_class="bin", live_size=1280, print_s=1.0, stream_port=8080,
+                   **COMMON)
 
 
 def live_view():
-    """Live view only: boxes (with why each was or wasn't used), distance, orientation, distance to the bin.
+    """Live view only: every pill bottle box (with why each was or wasn't used), x, y, z, distance, orientation,
+    distance to the bin. Prints a link to open in a browser.
 
       ros2 launch pill_bottle_nodes robot.launch.py
       ros2 run pill_bottle_nodes live_view --ros-args -p live_size:=1280
-      ros2 run rqt_image_view rqt_image_view /pill_bottle/range_view
     """
     tm = make_tm("live_view", RANGE_EXTRA)
 
     def go():
         rv = RangeView(tm)
+        print(f"\nLive camera: {rv.link()}   (open on your Mac or phone)\nCtrl+C to stop.\n")
         last = 0.0
-        print("Live view on /pill_bottle/range_view (Ctrl+C to stop)")
         while True:
             f = rv.analyze(tm.p["live_size"])
-            if time.time() - last > 2.0:
+            if time.time() - last >= max(tm.p["print_s"], 0.2):
                 last = time.time()
-                best = max(f["boxes"], key=lambda b: b["conf"]) if f["boxes"] else None
-                print("  " + ("no pill bottle" if best is None else
-                              f"pill bottle {best['conf']:.2f}, {best['w']:.0f}x{best['h']:.0f} px, "
-                              + (f"{best['dist']:.2f} m" if best["dist"] else "no depth")
-                              + f", {best['orientation']}"
-                              + (f", {best['bin_m']:.2f} m from the bin" if best.get("bin_m") is not None else "")),
-                      flush=True)
+                for line in detection_lines(f["boxes"], tm.p):
+                    print("  " + line, flush=True)
+                if f["boxes"]:
+                    print("  ---", flush=True)
     _run(go, tm)
 
 
+def _keyboard():
+    """(time, line) typed in the terminal, read in the background so the live view keeps running."""
+    import queue
+    import threading
+    q = queue.Queue()
+
+    def read():
+        while True:
+            try:
+                q.put((time.time(), input()))
+            except (EOFError, KeyboardInterrupt):
+                q.put((time.time(), "q"))
+                return
+    threading.Thread(target=read, daemon=True).start()
+    return q
+
+
 def test_range():
-    """T6: how far away can it see the pill bottle? Compares YOLO at 640 and 1280 at each tape mark.
+    """T6: how far away can it see the pill bottle? No questions: it measures the distance itself.
 
       ros2 launch pill_bottle_nodes robot.launch.py
       ros2 launch pill_bottle_nodes nodes.launch.py stage:=range
       ros2 run pill_bottle_nodes test_range --ros-args -p model_path:=/home/hello-robot/pill_bottle_robot/final_pill_bottle.pt
-      ros2 run rqt_image_view rqt_image_view /pill_bottle/range_view      (second terminal)
 
-    Tape marks straight out from the base (head pan line_pan; 0 = straight ahead). Only the head moves.
+    It prints a link to the live camera, then every second:
+      pill bottle 1/2 detected at x=1.20 y=-0.31 z=0.02 m | 1.24 m away | conf 0.83
+      pill bottle 2/2 detected at x=2.61 y=0.40 z=0.75 m | 2.64 m away | conf 0.21 (low conf)
+    (base frame: x forward, y left, z up from the floor). Low-confidence boxes are listed too.
+    Press Enter to RECORD the spot: it compares YOLO sizes (640 vs 1280), saves a picture and logs it,
+    using the measured distance and height (floor / table / raised). q + Enter to finish with the summary.
+    The head doesn't move; aim it with  python3 testing/head_keys.py  first.
     """
     tm = make_tm("test_range", RANGE_EXTRA)
 
@@ -221,67 +253,80 @@ def test_range():
         import cv2
         p = tm.p
         rv = RangeView(tm)
-        heights = dict(h.split(":") for h in p["heights"])
         logger = _results_logger(p["repo_testing_dir"], "T6", "Detection range (YOLO size vs distance)")
-        print("\nT6 range test. Tape marks:", ", ".join(f"{d:g}" for d in p["distances"]), "m from the base center.")
+        print(f"\nT6 range test.  Live camera: {rv.link()}")
         print("Expected bottle size in the image: " + ", ".join(
             f"{d:g} m {expected_box_px(d):.0f}px" for d in p["distances"]))
-        all_results = {}
+        print("Move the bottle around. Enter = record this spot, q + Enter = finish.\n")
+        keys = _keyboard()
+        spots, last = [], 0.0
         while True:
-            h = ask_line(f"\nHeight to test ({'/'.join(heights)}, q = finish)", "floor").lower()
-            if h.startswith("q"):
+            f = rv.analyze(p["live_size"])
+            if time.time() - last >= max(p["print_s"], 0.2):
+                last = time.time()
+                for line in detection_lines(f["boxes"], p):
+                    print("  " + line, flush=True)
+                if f["boxes"]:
+                    print("  ---", flush=True)
+            if keys.empty():
+                continue
+            cmd = keys.get()[1].strip().lower()
+            if cmd.startswith("q"):
                 break
-            z = float(heights.get(h, h if h.replace('.', '', 1).isdigit() else 0.0))
-            results = []
-            for d in p["distances"]:
-                a = ask_line(f"  Put the bottle at {d:g} m ({h}), press Enter (number = other distance, s = skip, "
-                             "q = done with this height)")
-                if a.lower().startswith("q"):
-                    break
-                if a.lower().startswith("s"):
-                    continue
-                try:
-                    true_m = float(a) if a else d
-                except ValueError:
-                    true_m = d
-                head = tm.c.position("link_head_tilt")
-                pan = p["line_pan"]
-                pan_cmd, tilt = look_at(head, (true_m * math.cos(pan), true_m * math.sin(pan), z + 0.04))
-                tm.move("aim the head", joint_head_pan=pan_cmd, joint_head_tilt=tilt)
-                time.sleep(1.0)
-                frames = []
-                for _ in range(int(p["frames"])):
-                    for size in p["sizes"]:
-                        frames.append(rv.analyze(size))
-                summ = summarize_spot(frames, true_m, p)
-                results.append((true_m, summ))
-                pic = os.path.join(OUT, f"T6_{h}_{true_m:g}m_{stamp()}.jpg")
-                os.makedirs(OUT, exist_ok=True)
-                if rv.last_view is not None:
-                    cv2.imwrite(pic, rv.last_view)
-                for size in sorted(summ):
-                    s = summ[size]
-                    print(f"    {size}: seen {s['seen']}/{s['n']} (conf {s['conf']}, box {s['box']} px, depth px "
-                          f"{s['depth_px']})  distance {s['dist']} m (error {s['err_cm']} cm)  fps {s['fps']}  "
-                          f"{'' if not s['reasons'] else 'misses: ' + str(s['reasons'])}  "
-                          f"-> {'SUCCESS' if s['passed'] else 'MISS'}")
-                    if logger:
-                        logger.log("SUCCESS" if s["passed"] else ("NOT_FOUND" if s["seen"] == 0 else "MISS"),
-                                   f"{h}_{true_m:g}m_imgsz{size}",
-                                   {"seen": s["seen"], "frames": s["n"], "conf": s["conf"], "box_px": s["box"],
-                                    "depth_px": s["depth_px"], "est_m": s["dist"], "true_m": true_m,
-                                    "error_cm": s["err_cm"], "fps": s["fps"], "reasons": s["reasons"]},
-                                   notes=f"picture: {pic}")
-            if results:
-                all_results[h] = results
-                sizes = sorted({z for _, s in results for z in s})
-                print(f"\n  Max reliable distance [{h}]: " + "   ".join(
-                    f"{z} -> {max_reliable(results, z) or 'none'} m" for z in sizes))
-                for line in suggestions(results, p):
-                    print("  Suggest:", line)
-        if all_results:
-            path = save_json({h: [(m, s) for m, s in r] for h, r in all_results.items()}, f"T6_range_{stamp()}.json")
-            print(f"\nSaved {path}. Summary: python3 testing/summarize_results.py --session latest")
+            print(f"\n  Recording spot {len(spots) + 1}: {int(p['frames'])} frames at each of {list(p['sizes'])} ...",
+                  flush=True)
+            frames = []
+            for _ in range(int(p["frames"])):
+                for size in p["sizes"]:
+                    frames.append(rv.analyze(size))
+            done, keep = time.time(), []
+            while not keys.empty():          # extra Enter presses while recording don't record twice; q still counts
+                ts, c = keys.get()
+                if ts > done or c.strip().lower().startswith("q"):
+                    keep.append((ts, c))
+            for k in keep:
+                keys.put(k)
+            dist, z = spot_distance(frames), spot_height(frames)
+            h = height_bucket(z)
+            summ = summarize_spot(frames, None, p)
+            where = f"{dist:.2f} m" if dist is not None else "no distance (not seen with depth)"
+            os.makedirs(OUT, exist_ok=True)
+            pic = os.path.join(OUT, f"T6_spot{len(spots) + 1}_{h}_{dist or 0:g}m_{stamp()}.jpg")
+            if rv.last_view is not None:
+                cv2.imwrite(pic, rv.last_view)
+            print(f"  Spot {len(spots) + 1}: {where}, height {h}" + (f" (z={z:.2f} m)" if z is not None else ""))
+            for size in sorted(summ):
+                s = summ[size]
+                print(f"    {size}: seen {s['seen']}/{s['n']} (conf {s['conf']}, box {s['box']} px, depth px "
+                      f"{s['depth_px']})  fps {s['fps']}  "
+                      f"{'' if not s['reasons'] else 'misses: ' + str(s['reasons'])}  "
+                      f"-> {'SUCCESS' if s['passed'] else 'MISS'}")
+                if logger:
+                    logger.log("SUCCESS" if s["passed"] else ("NOT_FOUND" if s["seen"] == 0 else "MISS"),
+                               f"{h}_{dist:g}m_imgsz{size}" if dist is not None else f"no_distance_imgsz{size}",
+                               {"seen": s["seen"], "frames": s["n"], "conf": s["conf"], "box_px": s["box"],
+                                "depth_px": s["depth_px"], "est_m": dist, "z_m": z, "fps": s["fps"],
+                                "reasons": s["reasons"]},
+                               notes=f"picture: {pic}")
+            print(f"    picture: {pic}\n", flush=True)
+            spots.append({"dist": dist, "z": z, "height": h, "summary": summ, "picture": pic})
+        if not spots:
+            print("No spots recorded.")
+            return
+        print("\n" + "=" * 70)
+        for h in sorted({s["height"] for s in spots if s["dist"] is not None}):
+            results = [(s["dist"], s["summary"]) for s in spots if s["height"] == h and s["dist"] is not None]
+            sizes = sorted({z for _, sm in results for z in sm})
+            print(f"Max reliable distance [{h}]: " + "   ".join(
+                f"{z} -> {max_reliable(results, z) or 'none'} m" for z in sizes))
+            for line in suggestions(results, p):
+                print("  Suggest:", line)
+        lost = [s for s in spots if s["dist"] is None]
+        if lost:
+            print(f"{len(lost)} spot(s) not seen with depth at all (no distance): "
+                  + ", ".join(s["picture"] for s in lost))
+        path = save_json(spots, f"T6_range_{stamp()}.json")
+        print(f"Saved {path}. Summary: python3 testing/summarize_results.py --session latest")
     _run(go, tm)
 
 

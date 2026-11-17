@@ -71,7 +71,7 @@ component at fault. There is one tester per node, plus two for the grasp.
 | `test_task` | `task_manager` | `full` | no | Finds the bottle and prints a reach plan (dry run) |
 | `test_orientation` | `orientation_classifier` + localizer (T17) | `orientation` | no | Combined orientation matches the real one in 9 of 10 |
 | `test_label` | label reading (T16) | `label` (`full` for `mode:=grasped`) | wrist, lift | Drug + strength right, or UNREADABLE (never wrong) |
-| `test_range` / `live_view` | detection range, YOLO 640 vs 1280 (T6) | `range` | head | Prints the max reliable distance per height |
+| `test_range` / `live_view` | detection range, YOLO 640 vs 1280 (T6) | `range` | head | Live link + "pill bottle i/N at x, y, z"; Enter records a spot; prints the max reliable distance per height |
 | `test_bin_detection` | bin class in the detector (T11) | `bin` | head | Bin in 9 of 10 frames, never called a bottle |
 | `test_bin_drop` | find the bin, drive there, drop (T12) | `full` + lidar | base, arm | Bottle in the bin, no collision |
 | `test_obstacles` | drive around obstacles (T13) | `full` + lidar | base | Arrives, no collision; "no way" when boxed in |

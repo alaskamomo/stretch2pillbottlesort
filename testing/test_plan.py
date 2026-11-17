@@ -29,14 +29,16 @@ TESTS = {
         "metrics": ["exec_time_s", "final_off_arm_line_cm", "failed_step", "grip_location"],
     },
     "T2": {
-        "name": "Find the pill bottle with the head camera",
+        "name": "Find every pill bottle with the head camera",
         "auto": "ros2 run bottle_tracking t2_find_tester --ros-args --params-file $P",
-        "setup": "Pause, move the bottle, head-only search. Reports position, distance, and whether it must move.",
-        "conditions": ["any_spot"],
+        "setup": "Put out 1-3 bottles (floor, table, raised). Head-only sweep; prints a live link, saves a picture "
+                 "of every view with boxes, lists each bottle (x, y, z, distance, confidence) and low-confidence ones.",
+        "conditions": ["1_bottles", "2_bottles", "3_bottles"],
         "trials": 5,
-        "success": "Finds the right object (not a distractor) with under 2 cm spread.",
+        "success": "Finds exactly the bottles that are out (no extras), each confirmed by you.",
         "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "FALSE_POSITIVE", "ERROR"],
-        "metrics": ["search_time_s", "distance_m", "spread_cm", "confidence"],
+        "metrics": ["search_time_s", "expected", "found", "possible", "no_position", "confidence", "best_low_conf",
+                    "farthest_m", "detector_frames"],
     },
     "T3a": {
         "name": "Live distance to the pill bottle",
@@ -90,14 +92,14 @@ TESTS = {
     },
     "T6": {
         "name": "Detection range: how far away it sees the bottle (YOLO 640 vs 1280)",
-        "auto": "ros2 run pill_bottle_nodes test_range   (stage:=range; live view: ros2 run pill_bottle_nodes live_view)",
-        "setup": "Tape marks straight out from the base at 1, 1.5, ... 4 m. The tester logs each mark and YOLO size "
-                 "as condition <height>_<distance>m_imgsz<size>.",
+        "auto": "ros2 run pill_bottle_nodes test_range   (stage:=range; prints a live link)",
+        "setup": "No tape or questions: it prints 'pill bottle i/N detected at x, y, z' live. Move the bottle, press "
+                 "Enter to record a spot (measured distance + height). Logged as <height>_<distance>m_imgsz<size>.",
         "conditions": ["floor", "table", "raised"],
         "trials": 7,
-        "success": "Seen in >= 80 % of frames AND distance within 3 cm of the tape (5 cm past 2.5 m).",
+        "success": "Seen (confidence >= conf_threshold, with depth) in >= 80 % of frames at that spot.",
         "outcomes": ["SUCCESS", "MISS", "NOT_FOUND", "ERROR"],
-        "metrics": ["seen", "frames", "conf", "box_px", "depth_px", "est_m", "true_m", "error_cm", "fps", "reasons"],
+        "metrics": ["seen", "frames", "conf", "box_px", "depth_px", "est_m", "z_m", "fps", "reasons"],
     },
     "T7": {
         "name": "Starting positions and replanning",

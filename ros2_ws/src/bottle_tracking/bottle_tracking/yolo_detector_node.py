@@ -13,7 +13,7 @@ Nothing is published when no pill bottle is seen.
 
   ros2 launch bottle_tracking bottle_tracking.launch.py model_path:=/home/hello-robot/best.pt
 
-Settings (config/params.yaml): model_path, class_name, conf_threshold, rotate_image.
+Settings (config/params.yaml): model_path, class_name, conf_threshold, imgsz, rotate_image.
 The Stretch head camera is mounted sideways. If you trained on UPRIGHT images, keep
 rotate_image: cw (the image is turned upright before YOLO). If you trained on the raw
 sideways images, set rotate_image: none. Check with rqt_image_view on /pill_bottle/debug_image.
@@ -100,6 +100,7 @@ class YoloDetector(Node):
         self.model_path = os.path.expanduser(override or p("model_path", "").value)
         self.class_name = p("class_name", "pill_bottle").value
         self.conf_thr = p("conf_threshold", 0.5).value
+        self.imgsz = int(p("imgsz", 640).value)                   # YOLO input size; 1280 sees farther (T6), slower
         self.rotate_mode = p("rotate_image", "cw").value
         self.max_rate = p("max_rate_hz", 5.0).value
         self.depth_scale = p("depth_scale", 0.001).value          # 16UC1 depth is millimeters
@@ -155,7 +156,7 @@ class YoloDetector(Node):
         raw_h, raw_w = color.shape[:2]
         view = np.ascontiguousarray(rotate(color, self.rotate_mode))
 
-        result = self.model(view, conf=self.conf_thr, classes=self.class_ids, verbose=False)[0]
+        result = self.model(view, conf=self.conf_thr, classes=self.class_ids, imgsz=self.imgsz, verbose=False)[0]
         boxes = sorted(((float(b.conf[0]), [float(v) for v in b.xyxy[0]]) for b in result.boxes),
                        key=lambda c: -c[0])
 

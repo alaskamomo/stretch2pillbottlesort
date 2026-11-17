@@ -1,16 +1,25 @@
 # bottle_localizer node: turns the best bottle box + aligned depth into a 3D position and orientation.
-#   subscribes /pill_bottle/detections, /camera/aligned_depth_to_color/image_raw, /camera/color/camera_info, tf
+#   subscribes /pill_bottle/detections, /camera/aligned_depth_to_color/image_raw, /camera/color/camera_info, tf,
+#              /pill_bottle/orientation_vision (optional, from orientation_classifier; T17)
 #   publishes  /pill_bottle/state  (BottleState in base_link)
+# The orientation is the depth fit combined with the vision model when it's running (orientation.fuse_orientation).
+# axis_tilt_deg stays the raw depth angle, so testers can still see what depth alone said.
+import json
+import time
+
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from pill_bottle_interfaces.msg import BottleState, Detections
 
 from .common import depth_to_meters, lookup_matrix
 from .geometry import box_points, classify_bottle, transform_points
+from .orientation import ORIENTATION_SETTINGS, fuse_orientation
 
 
 class BottleLocalizerNode(Node):
@@ -27,8 +36,11 @@ class BottleLocalizerNode(Node):
         self.declare_parameter("upright_max_deg", 30.0)
         self.declare_parameter("lying_min_deg", 60.0)
         self.declare_parameter("min_range", 0.22)       # m from base_link; closer = part of the robot, not the bottle
+        for k, v in ORIENTATION_SETTINGS.items():
+            self.declare_parameter(k, v)
         g = lambda n: self.get_parameter(n).value
         self.target = g("target_frame")
+        self.vision = None                              # (receive time, dict) from orientation_classifier
         self.depth = None
         self.K = None
         self.tf_buffer = Buffer()
@@ -36,6 +48,7 @@ class BottleLocalizerNode(Node):
         self.create_subscription(Image, g("depth_topic"), self.on_depth, 1)
         self.create_subscription(CameraInfo, g("info_topic"), self.on_info, 1)
         self.create_subscription(Detections, "/pill_bottle/detections", self.on_detections, 1)
+        self.create_subscription(String, "/pill_bottle/orientation_vision", self.on_vision, 1)
         self.pub = self.create_publisher(BottleState, "/pill_bottle/state", 1)
         self.get_logger().info(f"Localizer ready; publishing /pill_bottle/state in {self.target}")
 
@@ -44,6 +57,12 @@ class BottleLocalizerNode(Node):
 
     def on_info(self, msg):
         self.K = list(msg.k)
+
+    def on_vision(self, msg):
+        try:
+            self.vision = (time.time(), json.loads(msg.data))
+        except ValueError:
+            pass
 
     def on_detections(self, msg):
         g = lambda n: self.get_parameter(n).value
@@ -84,7 +103,20 @@ class BottleLocalizerNode(Node):
         out.header.stamp = msg.header.stamp
         out.header.frame_id = self.target
         out.position.x, out.position.y, out.position.z = (float(v) for v in info["center"])
-        out.orientation = info["orientation"]
+        vision = None
+        if self.vision is not None:
+            vision = dict(self.vision[1], age_s=time.time() - self.vision[0])
+        s = {k: g(k) for k in ORIENTATION_SETTINGS}
+        orientation, source, agree = fuse_orientation(info["tilt_deg"], len(pts), vision, s,
+                                                      g("upright_max_deg"), g("lying_min_deg"))
+        if agree is False:
+            self.get_logger().info(f"Orientation: depth says {info['orientation']} ({info['tilt_deg']:.0f} deg, "
+                                   f"{len(pts)} pts), vision says {vision['label']} ({vision['conf']:.2f}); "
+                                   f"using {orientation} ({source})", throttle_duration_sec=2.0)
+        if orientation != info["orientation"]:           # keep surface_z consistent with the orientation used
+            info["surface_z"] = (float(info["center"][2] - g("bottle_radius")) if orientation == "lying"
+                                 else float(np.percentile(pts[:, 2], 5)))
+        out.orientation = orientation
         out.axis_tilt_deg = float(info["tilt_deg"])
         out.axis_yaw = float(info["axis_yaw"])
         out.surface_z = float(info["surface_z"])

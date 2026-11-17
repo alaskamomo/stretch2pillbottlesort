@@ -7,13 +7,15 @@ import time
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from sensor_msgs.msg import Image, JointState
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import CameraInfo, Image, JointState, LaserScan
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from pill_bottle_interfaces.msg import BottleState, Detections, GripperView
 from pill_bottle_interfaces.srv import MoveJoints, PlanGrasp
 
-from .common import frame_position, image_to_numpy, update_joints, wait_future
+from .common import frame_position, image_to_numpy, lookup_matrix, update_joints, wait_future
 
 
 class PillClient(Node):
@@ -30,9 +32,16 @@ class PillClient(Node):
                                 ("detections", Detections, "/pill_bottle/detections"),
                                 ("gripper_view", GripperView, "/pill_bottle/gripper_view"),
                                 ("claw_image", Image, "/gripper_camera/image_raw"),
-                                ("head_debug", Image, "/pill_bottle/debug_image")):
+                                ("head_debug", Image, "/pill_bottle/debug_image"),
+                                ("head_color", Image, "/camera/color/image_raw"),
+                                ("orientation_vision", String, "/pill_bottle/orientation_vision"),
+                                ("depth", Image, "/camera/aligned_depth_to_color/image_raw"),
+                                ("camera_info", CameraInfo, "/camera/color/camera_info"),
+                                ("scan", LaserScan, "/scan")):
             self._events[key] = threading.Condition()
-            self.create_subscription(typ, topic, lambda m, k=key: self._store(k, m), 1)
+            # best effort works with both kinds of publisher (the lidar and camera drivers may use either)
+            qos = qos_profile_sensor_data if key in ("depth", "scan") else 1
+            self.create_subscription(typ, topic, lambda m, k=key: self._store(k, m), qos)
         self.move_cli = self.create_client(MoveJoints, "/pill_bottle/move_joints")
         self.plan_cli = self.create_client(PlanGrasp, "/pill_bottle/plan_grasp")
         self._executor = MultiThreadedExecutor(num_threads=2)
@@ -50,7 +59,8 @@ class PillClient(Node):
             self._events[key].notify_all()
 
     def wait_for(self, key, timeout_s=5.0, newer_than=None):
-        """Latest message on a topic ('state', 'detections', 'gripper_view') received after `newer_than`."""
+        """Latest message on a topic ('state', 'detections', 'gripper_view', 'head_color', ...) received after
+        `newer_than`."""
         newer_than = time.time() if newer_than is None else newer_than
         end = time.time() + timeout_s
         with self._events[key]:
@@ -96,9 +106,24 @@ class PillClient(Node):
         req.bottle = state
         return wait_future(self.plan_cli.call_async(req), 10.0)
 
+    def latest(self, key):
+        """Newest message on a topic, however old, or None."""
+        got = self._latest.get(key)
+        return got[1] if got else None
+
     # ---- tf ----
     def position(self, frame, base="base_link"):
         return frame_position(self.tf_buffer, base, frame)
+
+    def matrix(self, target, source, stamp=None):
+        """4x4 transform from source into target (stamp = a builtin_interfaces Time, or None for the latest)."""
+        from rclpy.time import Time
+        if stamp is not None:
+            try:
+                return lookup_matrix(self.tf_buffer, target, source, Time.from_msg(stamp))
+            except Exception:
+                pass
+        return lookup_matrix(self.tf_buffer, target, source)
 
     def wait_joints(self, timeout_s=5.0):
         end = time.time() + timeout_s

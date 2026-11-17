@@ -2,7 +2,7 @@
 """
 run_manual_test.py - walks you through ANY test from test_plan.py and logs each trial.
 
-Use it for tests you judge by eye or tape measure (grasp, T4, T14, ...), or for any
+Use it for tests you judge by eye or tape measure (grasp, T4, T13, ...), or for any
 test whose automatic tester isn't written yet. No ROS needed.
 
     python3 run_manual_test.py --list            # show all tests

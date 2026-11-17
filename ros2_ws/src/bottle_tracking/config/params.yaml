@@ -38,7 +38,8 @@
     # ---- YOLO detector (head camera) ----
     model_path: "/home/hello-robot/pill_bottle_robot/final_pill_bottle.pt"
     class_name: pill_bottle
-    conf_threshold: 0.5
+    conf_threshold: 0.5                   # T6 (test_range) prints what to set this to for far bottles
+    imgsz: 640                            # YOLO input size; 1280 sees about twice as far but runs slower (T6)
     rotate_image: cw                      # cw if you trained on upright images, none if on raw sideways ones
     max_rate_hz: 5.0
     depth_scale: 0.001

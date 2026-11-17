@@ -22,7 +22,8 @@ from test_logger import RESULTS_DIR
 # Pass-rate targets from the GitHub tickets. Tweak after talking to Prof. Martinson.
 TARGETS = {
     "T1a": 0.95, "T1b": 0.80, "T2": 0.90, "T3a": 0.90, "T3b": 0.90, "T3c": 0.90,
-    "T3d": 0.80, "T4": 1.00, "T9": 0.90, "T10": 0.90, "T11": 1.00,
+    "T3d": 0.80, "T4": 1.00, "T6": 0.80, "T7": 0.80, "T9": 0.80, "T10": 1.00, "T11": 0.90, "T12": 0.80, "T13": 0.80,
+    "T15": 0.60, "T16": 0.80, "T17": 0.90, "T18": 0.80, "T19a": 0.90, "T19b": 0.70,
 }
 
 

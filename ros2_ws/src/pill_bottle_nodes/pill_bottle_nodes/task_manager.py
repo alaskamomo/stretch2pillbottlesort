@@ -1,11 +1,12 @@
 # task_manager: the full run (what full_run.py did), built on the other nodes.
 #   search -> plan (turn/drive the base if needed) -> approach -> refine with claw camera -> grasp + grip test
-#   -> hold up to the head camera and verify -> place -> retry on a miss (4 tries max)
+#   -> hold up to the head camera and verify -> read the label (T16) -> place -> retry on a miss (4 tries max)
 #
 #   ros2 run pill_bottle_nodes task_manager                                  # asks once, then runs
 #   ros2 run pill_bottle_nodes task_manager --ros-args -p dry_run:=true      # find + plan only, no motion
 #   ros2 run pill_bottle_nodes task_manager --ros-args -p stop_after:=grasp  # stop (and put it back) after grasping
 #   ros2 run pill_bottle_nodes test_task                                     # same as dry_run:=true
+#   ... -p read_label:=false                                                 # skip the label step
 import json
 import math
 import os
@@ -14,8 +15,10 @@ import time
 import rclpy
 
 from . import grasp
+from . import label_reading as lr
 from .client import ask, start
 from .geometry import look_at
+from .label_steps import REGRASP_SETTINGS, LabelSteps, make_regrasp
 
 SETTINGS = {
     "dry_run": False,
@@ -27,15 +30,18 @@ SETTINGS = {
     "settle_s": 1.0,
     "base_search_turn": math.radians(60),
     "max_base_turns": 6,
-    "max_base_moves": 6,
+    "max_base_moves": 10,               # a bottle 2.5 m away can take 7 (T19 simulation)
     "max_attempts": 4,
     "hold_seconds": 8.0,
     "verify_conf": 0.25,
     "hold_lift": 0.9,
     "hold_arm": 0.10,
     "wrist_stow": 3.0,
+    "rotate": "cw",                     # head image rotation, same as bottle_detector's
 }
 SETTINGS.update(grasp.GRASP_SETTINGS)
+SETTINGS.update(lr.LABEL_SETTINGS)
+SETTINGS.update(REGRASP_SETTINGS)
 
 
 class TaskManager:
@@ -108,7 +114,8 @@ class TaskManager:
         self.say("Too many base moves; giving up.")
         return None
 
-    def verify(self):
+    def hold_up(self):
+        """The verify pose: bottle raised and brought in, head looking at the claw."""
         p = self.p
         self.move("raise the bottle", joint_lift=p["hold_lift"])
         self.move("bring it in", wrist_extension=p["hold_arm"])
@@ -116,6 +123,10 @@ class TaskManager:
         grip = self.c.position("link_grasp_center")
         pan, tilt = look_at(head, grip)
         self.move("look at the claw", joint_head_pan=pan, joint_head_tilt=tilt)
+
+    def verify(self):
+        p = self.p
+        self.hold_up()
         start_t, seen = time.time(), 0
         while time.time() - start_t < p["hold_seconds"]:
             det = self.c.wait_for("detections", 2.0)
@@ -123,6 +134,26 @@ class TaskManager:
                 seen += 1
         self.say(f"Verification: bottle seen in {seen} frame(s) over {p['hold_seconds']:.0f} s")
         return seen >= 2
+
+    def read_label(self, current, orientation, log):
+        """T16: read the label at the verify pose; wrist turns, lift change and one regrasp if needed."""
+        p = self.p
+        if p["dry_run"]:
+            return {"status": "skipped"}
+        reader = lr.build_reader(p, self.say)
+        steps = LabelSteps(self.c, p, self.move, self.say, reader, rotate=p["rotate"])
+        regrasp = make_regrasp(self.c, current, orientation, p, self.move, self.say, self.hold_up, steps, log)
+        t0 = time.time()
+        result = lr.run_label_sequence(steps.read_view, steps.set_yaw, steps.set_lift, regrasp, p, self.say)
+        result["time_s"] = round(time.time() - t0, 1)
+        f = result["fields"]
+        if result["status"] == "read":
+            self.say(f"Label: {f['drug_name']} {f['strength']}, patient {f['patient_name']}, Rx {f['rx_number']} "
+                     f"({result['views']} view(s), {', '.join(result['sources'])})")
+        else:
+            self.say(f"Label {result['status'].upper()} after {result['views']} view(s). "
+                     "Not guessing; this bottle needs a person to check it.")
+        return result
 
     def save_log(self, log):
         os.makedirs(grasp.OUT, exist_ok=True)
@@ -176,12 +207,25 @@ class TaskManager:
                 return
             ok = self.verify()
             log["verified"] = ok
-            self.save_log(log)
             self.say("Verified: it's the pill bottle." if ok else "Holding something, but YOLO couldn't confirm it.")
             if p["stop_after"] == "verify":
+                self.save_log(log)
                 self.say("Stopped after verifying (stop_after:=verify). The bottle is still in the claw.")
                 return
-            grasp.place(self.c, plan, p, self.move)
+            current = {"plan": plan}
+            if p["read_label"]:
+                label = self.read_label(current, state.orientation, log)
+                log["label"] = {k: label.get(k) for k in ("status", "fields", "views", "lift_adjusted", "regrasps",
+                                                          "sources", "time_s", "errors")}
+                if label["status"] == "regrasp_failed":
+                    self.save_log(log)
+                    self.stow_for_base()
+                    self.say("Lost the bottle during the regrasp; it's on the table.")
+                    return
+                # TODO(bin ticket): unreadable -> the "needs review" spot; read -> the bin. Until the bin
+                # navigation exists, it goes back where it was either way.
+            self.save_log(log)
+            grasp.place(self.c, current["plan"], p, self.move)
             self.stow_for_base()
             self.say("Done." if ok else "Done (unverified).")
             return

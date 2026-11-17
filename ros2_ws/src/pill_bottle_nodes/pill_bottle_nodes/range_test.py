@@ -5,6 +5,8 @@
 #   summarize_spot     one tape mark: how often it was seen at each YOLO size, confidence, box size, distance error
 #   max_reliable       the farthest mark where every mark up to it passed, per YOLO size
 #   suggestions        settings to change, from the results
+#   detection_lines    the live printout: "pill bottle 1/2 detected at x=.. y=.. z=.." (base frame)
+#   spot_distance / spot_height / height_bucket   where a recorded spot was, measured (no tape measure needed)
 import math
 import statistics
 from collections import Counter
@@ -12,7 +14,7 @@ from collections import Counter
 RANGE_SETTINGS = {
     "distances": [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],   # tape marks (m from the base center)
     "sizes": [640, 1280],                              # YOLO input sizes to compare
-    "frames": 20,                                      # frames per size per mark
+    "frames": 10,                                      # frames per size per recorded spot
     "show_conf": 0.10,                                 # draw boxes down to this confidence (yellow when below conf)
     "conf_threshold": 0.50,                            # what the detector uses now (params.yaml)
     "min_depth_px": 10,                                # detector needs this many good depth pixels
@@ -141,3 +143,48 @@ def suggestions(results, s):
     if reasons.get("not detected"):
         lines.append("not detected at all past the limit: add training pictures of far bottles from the head camera")
     return lines
+
+
+def detection_lines(boxes, s):
+    """Live printout for one frame. boxes: [{"conf", "xyz" (base_link) or None, "dist", "depth_px", ...}]
+    nearest first; low-confidence boxes are still listed (with the reason)."""
+    if not boxes:
+        return ["no pill bottle"]
+    order = sorted(boxes, key=lambda b: (b["dist"] is None, b["dist"] or 0.0, -b["conf"]))
+    n = len(order)
+    out = []
+    for i, b in enumerate(order, 1):
+        why = box_reasons(b["conf"], b["depth_px"], b["dist"], s)
+        tail = f"conf {b['conf']:.2f}" + (f" ({', '.join(why)})" if why else "")
+        if b.get("orientation"):
+            tail += f", {b['orientation']}"
+        if b.get("bin_m") is not None:
+            tail += f", {b['bin_m']:.2f} m from the bin"
+        if b["xyz"] is None:
+            out.append(f"pill bottle {i}/{n} detected, no depth so no position | {tail}")
+        else:
+            x, y, z = b["xyz"]
+            out.append(f"pill bottle {i}/{n} detected at x={x:.2f} y={y:.2f} z={z:.2f} m | "
+                       f"{b['dist']:.2f} m away | {tail}")
+    return out
+
+
+def _all_boxes(frames):
+    return [b for f in frames for b in f["boxes"] if b.get("xyz") is not None and b.get("dist") is not None]
+
+
+def spot_distance(frames):
+    """Measured distance of a recorded spot: median over every box with depth (any confidence), or None."""
+    d = [b["dist"] for b in _all_boxes(frames)]
+    return round(statistics.median(d), 2) if d else None
+
+
+def spot_height(frames):
+    z = [b["xyz"][2] for b in _all_boxes(frames)]
+    return round(statistics.median(z), 2) if z else None
+
+
+def height_bucket(z):
+    if z is None:
+        return "unknown"
+    return "floor" if z < 0.30 else ("table" if z < 0.90 else "raised")

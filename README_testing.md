@@ -79,14 +79,14 @@ The arm and wrist will move, so clear the right side of the robot first. This sa
 |---|---|
 | T1a find + plan (no motion) | `ros2 run bottle_tracking t1a_plan_tester --ros-args --params-file $P -p trials:=3` |
 | T1b find + plan + drive + grab | `ros2 run bottle_tracking t1b_execute_tester --ros-args --params-file $P -p trials:=3` |
-| T2 find + report position | `ros2 run bottle_tracking t2_find_tester --ros-args --params-file $P -p trials:=5` |
+| T2 find every bottle + positions + pictures | `ros2 run bottle_tracking t2_find_tester --ros-args --params-file $P -p trials:=5` (prints a live link) |
 | T3a live distance | `ros2 run bottle_tracking t3a_distance_tester --ros-args --params-file $P`, then view `/pill_bottle/live_view` |
 | T3b watch while moving | `ros2 run bottle_tracking t3b_tracking_tester --ros-args --params-file $P -p trials:=3` |
 | T3c remember after moving | `ros2 run bottle_tracking t3c_remember_tester --ros-args --params-file $P -p trials:=3` |
 | T3d move if approved, then grip | `ros2 run bottle_tracking t3d_grip_tester --ros-args --params-file $P -p trials:=3` |
 | T16 label reading | `ros2 run pill_bottle_nodes test_label` (stage:=label) |
 | T17 orientation | `ros2 run pill_bottle_nodes test_orientation` (stage:=orientation) |
-| T6 detection range | `ros2 run pill_bottle_nodes test_range` (stage:=range); live view: `live_view` |
+| T6 detection range | `ros2 run pill_bottle_nodes test_range` (stage:=range, prints a live link, Enter records a spot); live view only: `live_view` |
 | T11 / T12 / T13 / T18 | `test_bin_detection` / `test_bin_drop` / `test_obstacles` / `test_world` (pill_bottle_nodes) |
 | T19a / T19b | `t19a_orientation_plan` (stage:=arm) / `t19b_orientation_grasp` (stage:=full) |
 | T15 full run | `ros2 run pill_bottle_nodes demo_run` (stage:=full, lidar on) |
@@ -94,5 +94,7 @@ The arm and wrist will move, so clear the right side of the robot first. This sa
 | Results | `python3 testing/summarize_results.py --session latest` (add `--markdown` for GitHub) |
 
 Change the pause between trials with `-p pause_s:=30`.
+
+Live camera in a browser: T2, T6 and `live_view` print a link like `http://10.0.11.20:8080` (Mac or phone on the same Wi-Fi). Aim the head from the keyboard with `python3 testing/head_keys.py` (w/s tilt, a/d pan, c center, q quit; the driver must be running).
 
 Unit tests (no robot needed): `cd ros2_ws/src/bottle_tracking && python3 -m pytest test/ -v`

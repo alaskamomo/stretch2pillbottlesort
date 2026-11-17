@@ -7,9 +7,13 @@ aligned depth image, and publishes the bottle's 3D position:
 
   /pill_bottle/detection       geometry_msgs/PointStamped  bottle center, camera frame, image timestamp
   /pill_bottle/detection_info  std_msgs/String (JSON)      confidence, pixel, depth, box
-  /pill_bottle/debug_image     sensor_msgs/Image           camera image with the box drawn (view with rqt_image_view)
+  /pill_bottle/detections_all  std_msgs/String (JSON)      EVERY pill_bottle box down to report_conf (several
+                                                           bottles, low-confidence ones), each with its 3D point
+  /pill_bottle/debug_image     sensor_msgs/Image           camera image with the boxes drawn (view with rqt_image_view)
+                                                           green = pill bottle, yellow = low confidence, red = no depth/too far
 
-Nothing is published when no pill bottle is seen.
+/pill_bottle/detection (the one bottle the tracker follows) is only published when a box reaches
+conf_threshold. /pill_bottle/detections_all is published for every processed frame, even with no boxes.
 
   ros2 launch bottle_tracking bottle_tracking.launch.py model_path:=/home/hello-robot/best.pt
 
@@ -36,6 +40,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
 from bottle_tracking.detection_publisher import deproject
+from bottle_tracking.multi_find import box_label, box_status
 
 
 def image_to_numpy(msg):
@@ -100,6 +105,7 @@ class YoloDetector(Node):
         self.model_path = os.path.expanduser(override or p("model_path", "").value)
         self.class_name = p("class_name", "pill_bottle").value
         self.conf_thr = p("conf_threshold", 0.5).value
+        self.report_conf = p("report_conf", 0.10).value          # boxes this sure or more are still reported
         self.imgsz = int(p("imgsz", 640).value)                   # YOLO input size; 1280 sees farther (T6), slower
         self.rotate_mode = p("rotate_image", "cw").value
         self.max_rate = p("max_rate_hz", 5.0).value
@@ -130,6 +136,7 @@ class YoloDetector(Node):
         self.last_run = 0.0
         self.det_pub = self.create_publisher(PointStamped, "/pill_bottle/detection", 10)
         self.info_pub = self.create_publisher(String, "/pill_bottle/detection_info", 10)
+        self.all_pub = self.create_publisher(String, "/pill_bottle/detections_all", 10)
         self.dbg_pub = self.create_publisher(Image, "/pill_bottle/debug_image", 2)
         self.create_subscription(CameraInfo, info_topic, self.on_info, qos_profile_sensor_data)
         color_sub = message_filters.Subscriber(self, Image, color_topic, qos_profile=qos_profile_sensor_data)
@@ -156,44 +163,48 @@ class YoloDetector(Node):
         raw_h, raw_w = color.shape[:2]
         view = np.ascontiguousarray(rotate(color, self.rotate_mode))
 
-        result = self.model(view, conf=self.conf_thr, classes=self.class_ids, imgsz=self.imgsz, verbose=False)[0]
+        result = self.model(view, conf=min(self.report_conf, self.conf_thr), classes=self.class_ids,
+                            imgsz=self.imgsz, verbose=False)[0]
         boxes = sorted(((float(b.conf[0]), [float(v) for v in b.xyxy[0]]) for b in result.boxes),
                        key=lambda c: -c[0])
 
-        # Take the most confident box that has good depth AND is close enough to be the bottle.
-        # Far-away look-alikes (a bottle on a shelf across the room) are skipped.
-        chosen, rejected = None, []
+        # Every box gets a status. The tracked bottle (/pill_bottle/detection) is the most confident box
+        # that reaches conf_threshold, has good depth AND is close enough (far look-alikes are skipped).
+        entries = []
         for conf, box in boxes:
             d, cu, cv, n_valid = self.box_depth(box, depth, raw_w, raw_h)
-            if d is None:
-                rejected.append((conf, box, f"no depth ({n_valid} px)"))
-            elif d > self.max_depth:
-                rejected.append((conf, box, f"{d:.1f} m, too far"))
-            elif chosen is None:
-                chosen = (conf, box, d, cu, cv, n_valid)
-            else:
-                rejected.append((conf, box, "lower confidence"))
-
+            e = {"conf": round(conf, 3), "box": [round(v) for v in box], "pixel": [round(cu), round(cv)],
+                 "depth_m": None if d is None else round(d, 3), "depth_px": n_valid, "xyz": None}
+            if d is not None:
+                e["xyz"] = [round(v, 4) for v in deproject(cu, cv, d, self.K)]
+            e["status"] = box_status(conf, d, self.conf_thr, self.max_depth)
+            entries.append(e)
+        chosen = next((e for e in entries if e["status"] == "ok"), None)
         if chosen is not None:
-            conf, box, d, cu, cv, n_valid = chosen
-            x, y, z = deproject(cu, cv, d, self.K)
+            chosen["status"] = "tracked"
+
+        stamp = color_msg.header.stamp.sec + color_msg.header.stamp.nanosec * 1e-9
+        self.all_pub.publish(String(data=json.dumps({
+            "stamp": stamp, "frame": color_msg.header.frame_id, "conf_threshold": self.conf_thr,
+            "boxes": entries})))
+        if chosen is not None:
+            x, y, z = chosen["xyz"]
             msg = PointStamped()
             msg.header = color_msg.header
             msg.point.x, msg.point.y, msg.point.z = x, y, z
             self.det_pub.publish(msg)
             self.info_pub.publish(String(data=json.dumps({
-                "confidence": round(conf, 3), "pixel": [round(cu), round(cv)],
-                "depth_m": round(d, 3), "valid_depth_pixels": n_valid,
-                "box_rotated_image": [round(v) for v in box], "other_boxes": len(rejected)})))
-        elif boxes:
-            why = ", ".join(r[2] for r in rejected)
+                "confidence": chosen["conf"], "pixel": chosen["pixel"], "depth_m": chosen["depth_m"],
+                "valid_depth_pixels": chosen["depth_px"], "box_rotated_image": chosen["box"],
+                "other_boxes": len(entries) - 1})))
+        elif entries:
+            why = ", ".join(f"{e['conf']:.2f} {e['status']}" for e in entries)
             self.get_logger().warn(f"pill bottle box(es) seen but not used: {why}", throttle_duration_sec=3.0)
 
         if self.publish_debug and self.dbg_pub.get_subscription_count() > 0:
-            for conf, box, why in rejected:          # red = seen but not used
-                self.label(view, box, f"{conf:.2f} {why}", (0, 0, 255))
-            if chosen is not None:                    # green = the bottle it is using
-                self.label(view, chosen[1], f"pill_bottle {chosen[0]:.2f}  {chosen[2]:.2f} m", (0, 255, 0))
+            for e in reversed(entries):              # most confident drawn last (on top)
+                text, color = box_label(e)
+                self.label(view, e["box"], text, color)
             self.dbg_pub.publish(numpy_to_image(view, color_msg.header))
 
     def box_depth(self, box, depth, raw_w, raw_h):
@@ -231,7 +242,7 @@ class YoloDetector(Node):
             import cv2
             x1, y1 = int(box[0]), max(18, int(box[1]) - 6)
             (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-            cv2.rectangle(img, (x1, y1 - th - 6), (x1 + tw + 6, y1 + 4), (255, 255, 255), -1)
+            cv2.rectangle(img, (x1, y1 - th - 6), (x1 + tw + 6, y1 + 4), (0, 0, 0), -1)   # dark: yellow stays readable
             cv2.putText(img, text, (x1 + 3, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
         except ImportError:
             pass

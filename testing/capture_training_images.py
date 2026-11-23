@@ -44,12 +44,18 @@ from sensor_msgs.msg import Image, JointState
 from std_srvs.srv import SetBool, Trigger
 from trajectory_msgs.msg import JointTrajectoryPoint
 
-try:
-    from pill_bottle_nodes.web_stream import WebStream
-except ImportError:  # workspace not sourced: use the copy in this repo
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "..", "ros2_ws", "src", "pill_bottle_nodes"))
-    from pill_bottle_nodes.web_stream import WebStream
+def _load_web_stream():
+    """Load web_stream.py straight from this repo, so an older built package can't hide it."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ros2_ws", "src",
+                        "pill_bottle_nodes", "pill_bottle_nodes", "web_stream.py")
+    spec = importlib.util.spec_from_file_location("capture_web_stream", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.WebStream
+
+
+WebStream = _load_web_stream()
 
 PAN, TILT = "joint_head_pan", "joint_head_tilt"
 LIMITS = {PAN: (-4.0, 1.7), TILT: (-1.5, 0.79)}

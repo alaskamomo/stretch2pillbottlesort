@@ -95,6 +95,6 @@ The arm and wrist will move, so clear the right side of the robot first. This sa
 
 Change the pause between trials with `-p pause_s:=30`.
 
-Live camera in a browser: T2, T6 and `live_view` print a link like `http://10.0.11.20:8080` (Mac or phone on the same Wi-Fi). Aim the head from the keyboard with `python3 testing/head_keys.py` (w/s tilt, a/d pan, c center, q quit; the driver must be running).
+Live camera in a browser: T2, T6 and `live_view` print a link like `http://10.0.11.20:8080` (Mac or phone on the same Wi-Fi). Aim the head from the keyboard with `python3 testing/head_keys.py` (w/s tilt, a/d pan, c center, q quit; the driver must be running). For training pictures use `python3 testing/capture_training_images.py`: it prints a live link, aims with w/a/s/d, takes a picture with space, and `f` toggles a free camera you can move by hand (uses the runstop, so the wrist and gripper go limp too).
 
 Unit tests (no robot needed): `cd ros2_ws/src/bottle_tracking && python3 -m pytest test/ -v`
